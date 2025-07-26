@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "user_prompt_submit": [
+      {
+        "command": ["python", "-m", "hooks.user_prompt_submit"],
+        "working_directory": "/Users/goku/code_projects/claude-code-context/test-harness/test-env/projects/mobile-app",
+        "environment": {
+          "PROJECT_NAME": "mobile-app",
+          "COLLECTION_PREFIX": "mobile-app",
+          "QDRANT_URL": "http://localhost:6334"
+        }
+      }
+    ]
+  },
+  "project_info": {
+    "name": "mobile-app",
+    "collection_prefix": "mobile-app",
+    "created_at": "2025-07-26T19:28:17Z"
+  }
+}

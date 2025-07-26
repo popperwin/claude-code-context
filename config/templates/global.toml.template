@@ -1,0 +1,65 @@
+# Global configuration template for claude-code-context
+# Located at ~/.claude-indexer/config.toml
+
+[global]
+version = "1.0.0"
+max_concurrent_projects = 10
+default_timeout = 60.0
+enable_telemetry = false
+enable_auto_updates = false
+
+[directories]
+global_cache_dir = "${HOME}/.cache/claude-indexer"
+global_config_dir = "${HOME}/.claude-indexer"
+stella_cache_dir = "${HOME}/.cache/claude-indexer/stella"
+
+[qdrant]
+default_url = "http://localhost:6333"
+default_timeout = 60.0
+default_batch_size = 100
+default_distance_metric = "cosine"
+
+[stella]
+default_model = "stella_en_400M_v5"
+default_dimensions = 1024
+default_batch_size = 32
+auto_download = true
+
+[performance]
+max_file_size_mb = 10
+max_files_per_batch = 50
+max_processing_time_ms = 5000
+enable_caching = true
+
+[hooks]
+max_results_per_query = 5
+min_relevance_score = 0.3
+enable_hybrid_search = true
+qdrant_timeout = 10.0
+
+[logging]
+level = "INFO"
+log_to_file = false
+log_file = "${HOME}/.claude-indexer/logs/claude-indexer.log"
+
+# Default file patterns that apply to all projects
+[patterns]
+include = [
+    "*.py", "*.js", "*.ts", "*.jsx", "*.tsx",
+    "*.go", "*.rs", "*.java", "*.cpp", "*.c", "*.h", "*.hpp",
+    "*.cs", "*.rb", "*.php", "*.swift", "*.kt", "*.scala",
+    "*.md", "*.txt", "*.json", "*.yaml", "*.yml", "*.toml"
+]
+
+exclude = [
+    "node_modules/*", ".git/*", "__pycache__/*", "*.pyc",
+    "venv/*", ".venv/*", "env/*", ".env/*",
+    "dist/*", "build/*", "target/*", ".next/*",
+    "*.log", "*.tmp", "*.cache", ".DS_Store",
+    "*.min.js", "*.min.css", "coverage/*"
+]
+
+# Registry of configured projects
+[projects]
+# Projects will be added here automatically
+# Format: project_name = "/path/to/project"

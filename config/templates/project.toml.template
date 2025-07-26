@@ -1,0 +1,71 @@
+# Project configuration template for claude-code-context
+# This is a TOML format template that gets converted to JSON
+
+[project]
+name = "${PROJECT_NAME}"
+path = "${PROJECT_PATH}"
+collection_prefix = "${COLLECTION_PREFIX}"
+description = ""
+version = "1.0.0"
+enable_watch_mode = false
+auto_index_on_change = true
+max_concurrent_operations = 4
+cache_embeddings = true
+
+[qdrant]
+url = "http://localhost:6333"
+timeout = 60.0
+batch_size = 100
+parallel_requests = 4
+vector_size = 1024
+distance_metric = "cosine"
+
+[qdrant.collections]
+code = "${COLLECTION_PREFIX}-code"
+relations = "${COLLECTION_PREFIX}-relations"
+embeddings = "${COLLECTION_PREFIX}-embeddings"
+
+[stella]
+model_name = "stella_en_400M_v5"
+dimensions = 1024
+cache_dir = "${HOME}/.cache/claude-indexer/stella"
+device = null
+batch_size = 32
+max_length = 512
+normalize_embeddings = true
+use_fp16 = true
+
+[indexing]
+include_patterns = [
+    "*.py", "*.js", "*.ts", "*.jsx", "*.tsx",
+    "*.go", "*.rs", "*.java", "*.cpp", "*.c", "*.h", "*.hpp",
+    "*.cs", "*.rb", "*.php", "*.swift", "*.kt", "*.scala",
+    "*.md", "*.txt", "*.json", "*.yaml", "*.yml", "*.toml"
+]
+
+exclude_patterns = [
+    "node_modules/*", ".git/*", "__pycache__/*", "*.pyc",
+    "venv/*", ".venv/*", "env/*", ".env/*",
+    "dist/*", "build/*", "target/*", ".next/*",
+    "*.log", "*.tmp", "*.cache", ".DS_Store",
+    "*.min.js", "*.min.css", "coverage/*"
+]
+
+max_file_size_mb = 10
+max_files_per_batch = 50
+extract_docstrings = true
+extract_comments = true
+include_test_files = true
+
+# Language-specific settings
+[indexing.language_settings.python]
+extract_type_hints = true
+include_private_methods = false
+
+[indexing.language_settings.javascript]
+include_node_modules = false
+extract_jsdoc = true
+
+[indexing.language_settings.typescript]
+extract_interfaces = true
+include_type_definitions = true

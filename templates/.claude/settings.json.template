@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "user_prompt_submit": [
+      {
+        "command": ["python", "-m", "hooks.user_prompt_submit"],
+        "working_directory": "${PROJECT_PATH}",
+        "environment": {
+          "PROJECT_NAME": "${PROJECT_NAME}",
+          "COLLECTION_PREFIX": "${COLLECTION_PREFIX}",
+          "QDRANT_URL": "http://localhost:6333"
+        }
+      }
+    ]
+  },
+  "project_info": {
+    "name": "${PROJECT_NAME}",
+    "collection_prefix": "${COLLECTION_PREFIX}",
+    "created_at": "${CREATED_AT}",
+    "version": "1.0.0"
+  },
+  "context_settings": {
+    "max_results_per_query": 5,
+    "min_relevance_score": 0.3,
+    "enable_hybrid_search": true,
+    "timeout_ms": 5000
+  }
+}

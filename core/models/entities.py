@@ -1,0 +1,345 @@
+"""
+Core entity models for code parsing and storage.
+
+Defines entities, AST nodes, and relations extracted from code.
+"""
+
+from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from typing import Any, Optional, List, Dict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
+import hashlib
+
+
+class EntityType(Enum):
+    """Types of code entities extracted"""
+    # File structure
+    PROJECT = "project"
+    DIRECTORY = "directory"  
+    FILE = "file"
+    
+    # Code entities
+    MODULE = "module"
+    CLASS = "class"
+    FUNCTION = "function"
+    METHOD = "method"
+    VARIABLE = "variable"
+    CONSTANT = "constant"
+    
+    # Language-specific
+    IMPORT = "import"
+    DECORATOR = "decorator"
+    TYPE_ALIAS = "type_alias"
+    INTERFACE = "interface"
+    ENUM = "enum"
+    STRUCT = "struct"
+
+
+class Visibility(Enum):
+    """Entity visibility levels"""
+    PUBLIC = "public"
+    PRIVATE = "private"
+    PROTECTED = "protected"
+
+
+@dataclass(frozen=True)
+class SourceLocation:
+    """Precise source file location with byte and line information"""
+    file_path: Path
+    start_line: int
+    end_line: int
+    start_column: int
+    end_column: int
+    start_byte: int
+    end_byte: int
+    
+    def __post_init__(self):
+        """Validate location data"""
+        if self.start_line > self.end_line:
+            raise ValueError("start_line cannot be greater than end_line")
+        if self.start_line == self.end_line and self.start_column > self.end_column:
+            raise ValueError("start_column cannot be greater than end_column on same line")
+        if self.start_byte > self.end_byte:
+            raise ValueError("start_byte cannot be greater than end_byte")
+    
+    @property
+    def location_id(self) -> str:
+        """Generate unique location identifier"""
+        return f"{self.file_path}:{self.start_line}:{self.start_column}"
+
+
+class Entity(BaseModel):
+    """Code entity with full metadata and source information"""
+    model_config = ConfigDict(
+        frozen=True,
+        str_strip_whitespace=True,
+        validate_assignment=True,
+        use_enum_values=False
+    )
+    
+    # Identification
+    id: str  # Format: "file://path::type::name::line"
+    name: str
+    qualified_name: str
+    entity_type: EntityType
+    
+    # Location
+    location: SourceLocation
+    
+    # Content
+    signature: Optional[str] = None
+    docstring: Optional[str] = None
+    source_code: str
+    source_hash: str = Field(default="")
+    
+    # Metadata
+    visibility: Visibility = Visibility.PUBLIC
+    is_async: bool = False
+    is_test: bool = False
+    is_deprecated: bool = False
+    
+    # Relationships
+    parent_id: Optional[str] = None
+    children_ids: List[str] = Field(default_factory=list)
+    dependencies: List[str] = Field(default_factory=list)
+    
+    # Timestamps
+    created_at: datetime = Field(default_factory=datetime.now)
+    last_modified: datetime = Field(default_factory=datetime.now)
+    
+    # Additional metadata
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    
+    def __init__(self, **data):
+        # Auto-generate source_hash if not provided
+        if 'source_hash' not in data or not data['source_hash']:
+            data['source_hash'] = self._generate_source_hash(data.get('source_code', ''))
+        super().__init__(**data)
+    
+    @staticmethod
+    def _generate_source_hash(source_code: str) -> str:
+        """Generate SHA-256 hash of source code"""
+        return hashlib.sha256(source_code.encode('utf-8')).hexdigest()[:16]
+    
+    @field_validator('id')
+    @classmethod
+    def validate_id(cls, v: str) -> str:
+        """Validate entity ID format"""
+        if not v or '::' not in v:
+            raise ValueError('Entity ID must contain "::" separators')
+        return v
+    
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        """Validate entity name is not empty"""
+        if not v.strip():
+            raise ValueError('Entity name cannot be empty')
+        return v.strip()
+    
+    @field_validator('qualified_name')
+    @classmethod
+    def validate_qualified_name(cls, v: str) -> str:
+        """Validate qualified name is not empty"""  
+        if not v.strip():
+            raise ValueError('Qualified name cannot be empty')
+        return v.strip()
+    
+    def update_source(self, new_source: str) -> 'Entity':
+        """Create updated entity with new source code"""
+        new_hash = self._generate_source_hash(new_source)
+        return self.model_copy(update={
+            'source_code': new_source,
+            'source_hash': new_hash,
+            'last_modified': datetime.now()
+        })
+    
+    @property
+    def is_container(self) -> bool:
+        """Check if entity can contain other entities"""
+        return self.entity_type in {
+            EntityType.PROJECT, 
+            EntityType.DIRECTORY,
+            EntityType.FILE,
+            EntityType.MODULE,
+            EntityType.CLASS,
+            EntityType.INTERFACE
+        }
+    
+    @property
+    def language_hint(self) -> Optional[str]:
+        """Infer programming language from file extension"""
+        if not self.location.file_path:
+            return None
+        
+        suffix = self.location.file_path.suffix.lower()
+        language_map = {
+            '.py': 'python',
+            '.js': 'javascript', 
+            '.ts': 'typescript',
+            '.jsx': 'javascript',
+            '.tsx': 'typescript',
+            '.go': 'go',
+            '.rs': 'rust',
+            '.java': 'java',
+            '.cpp': 'cpp',
+            '.c': 'c',
+            '.h': 'c',
+            '.hpp': 'cpp',
+            '.cs': 'csharp',
+            '.rb': 'ruby',
+            '.php': 'php',
+            '.swift': 'swift',
+            '.kt': 'kotlin',
+            '.scala': 'scala'
+        }
+        return language_map.get(suffix)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for storage"""
+        data = self.model_dump()
+        # Convert Path objects to strings for JSON serialization
+        data['location'] = {
+            **data['location'],
+            'file_path': str(data['location']['file_path'])
+        }
+        return data
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Entity':
+        """Create entity from dictionary"""
+        # Convert file_path back to Path object
+        if 'location' in data and 'file_path' in data['location']:
+            data['location']['file_path'] = Path(data['location']['file_path'])
+        return cls(**data)
+
+
+class ASTNode(BaseModel):
+    """AST node representation for tree-sitter parsing"""
+    model_config = ConfigDict(frozen=True)
+    
+    # Node identification
+    node_id: str
+    node_type: str  # Tree-sitter node type
+    language: str
+    
+    # Location
+    location: SourceLocation
+    
+    # Content
+    text: str
+    
+    # Tree structure
+    parent_id: Optional[str] = None
+    children_ids: List[str] = Field(default_factory=list)
+    
+    # Metadata
+    is_named: bool = True
+    is_error: bool = False
+    
+    @field_validator('node_id')
+    @classmethod
+    def validate_node_id(cls, v: str) -> str:
+        """Validate node ID is not empty"""
+        if not v.strip():
+            raise ValueError('Node ID cannot be empty')
+        return v
+    
+    @field_validator('language')
+    @classmethod
+    def validate_language(cls, v: str) -> str:
+        """Validate supported language"""
+        supported = {
+            'python', 'javascript', 'typescript', 'go', 'rust', 
+            'java', 'cpp', 'c', 'csharp', 'ruby', 'php'
+        }
+        if v.lower() not in supported:
+            raise ValueError(f'Unsupported language: {v}')
+        return v.lower()
+    
+    def is_definition(self) -> bool:
+        """Check if node represents a definition"""
+        definition_types = {
+            'function_definition', 'class_definition', 'method_definition',
+            'variable_declaration', 'const_declaration', 'function_declaration',
+            'interface_declaration', 'type_alias_declaration', 'enum_declaration'
+        }
+        return self.node_type in definition_types
+
+
+class Relation(BaseModel):
+    """Relationship between entities"""
+    model_config = ConfigDict(frozen=True)
+    
+    # Relationship identification
+    id: str
+    relation_type: str  # calls, imports, extends, implements, uses, etc.
+    
+    # Entities involved
+    source_entity_id: str
+    target_entity_id: str
+    
+    # Context
+    context: Optional[str] = None  # Where the relation occurs
+    strength: float = Field(default=1.0, ge=0.0, le=1.0)  # Relation strength
+    
+    # Metadata
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.now)
+    
+    @field_validator('id')
+    @classmethod
+    def validate_id(cls, v: str) -> str:
+        """Validate relation ID"""
+        if not v.strip():
+            raise ValueError('Relation ID cannot be empty')
+        return v
+    
+    @field_validator('relation_type')
+    @classmethod  
+    def validate_relation_type(cls, v: str) -> str:
+        """Validate relation type"""
+        valid_types = {
+            'calls', 'imports', 'extends', 'implements', 'uses', 
+            'references', 'defines', 'overrides', 'decorates',
+            'contains', 'depends_on', 'similar_to'
+        }  
+        if v.lower() not in valid_types:
+            raise ValueError(f'Invalid relation type: {v}')
+        return v.lower()
+    
+    @classmethod
+    def create_call_relation(
+        cls, 
+        caller_id: str, 
+        callee_id: str, 
+        context: Optional[str] = None
+    ) -> 'Relation':
+        """Create a function call relation"""
+        relation_id = f"call:{caller_id}:{callee_id}"
+        return cls(
+            id=relation_id,
+            relation_type="calls",
+            source_entity_id=caller_id,
+            target_entity_id=callee_id,
+            context=context
+        )
+    
+    @classmethod
+    def create_import_relation(
+        cls,
+        importer_id: str,
+        imported_id: str,
+        context: Optional[str] = None
+    ) -> 'Relation':
+        """Create an import relation"""
+        relation_id = f"import:{importer_id}:{imported_id}"
+        return cls(
+            id=relation_id,
+            relation_type="imports", 
+            source_entity_id=importer_id,
+            target_entity_id=imported_id,
+            context=context
+        )

@@ -1,0 +1,10 @@
+{
+  "name": "web-app",
+  "version": "1.0.0",
+  "description": "A React web application with TypeScript",
+  "main": "src/index.tsx",
+  "dependencies": {
+    "react": "^18.0.0",
+    "typescript": "^5.0.0"
+  }
+}

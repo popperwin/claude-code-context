@@ -1,0 +1,132 @@
+# Docker Compose configuration for claude-code-context
+# Single Qdrant instance with collection-based project isolation
+
+version: '3.8'
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.7.4
+    container_name: claude-indexer-qdrant
+    restart: unless-stopped
+    
+    ports:
+      - "6333:6333"  # HTTP API
+      - "6334:6334"  # gRPC API
+    
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+      - ./qdrant_config:/qdrant/config
+    
+    environment:
+      # Service configuration
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HOST=0.0.0.0
+      
+      # Logging
+      - QDRANT__LOG_LEVEL=INFO
+      
+      # Storage optimization
+      - QDRANT__STORAGE__STORAGE_PATH=/qdrant/storage
+      - QDRANT__STORAGE__SNAPSHOTS_PATH=/qdrant/storage/snapshots
+      - QDRANT__STORAGE__ON_DISK_PAYLOAD=true
+      - QDRANT__STORAGE__WAL_CAPACITY_MB=32
+      - QDRANT__STORAGE__WAL_SEGMENTS_AHEAD=0
+      
+      # Performance tuning
+      - QDRANT__OPTIMIZER__DELETED_THRESHOLD=0.2
+      - QDRANT__OPTIMIZER__VACUUM_MIN_VECTOR_NUMBER=1000
+      - QDRANT__OPTIMIZER__DEFAULT_SEGMENT_NUMBER=0
+      - QDRANT__OPTIMIZER__MAX_SEGMENT_SIZE_MB=100
+      - QDRANT__OPTIMIZER__MEMMAP_THRESHOLD_MB=100
+      - QDRANT__OPTIMIZER__INDEXING_THRESHOLD_MB=100
+      
+      # Memory management
+      - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=32
+      - QDRANT__SERVICE__MAX_WORKERS=0  # Auto-detect
+      
+      # Security (basic)
+      - QDRANT__SERVICE__ENABLE_CORS=true
+      
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    
+    labels:
+      - "traefik.enable=false"
+      - "com.claude-indexer.service=qdrant"
+      - "com.claude-indexer.version=1.7.4"
+    
+    # Resource limits for stable operation
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Qdrant dashboard (development only)
+  qdrant-dashboard:
+    image: qdrant/qdrant-web-ui:latest
+    container_name: claude-indexer-dashboard
+    restart: unless-stopped
+    profiles:
+      - dashboard
+    
+    ports:
+      - "3000:3000"
+    
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+    
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    
+    labels:
+      - "com.claude-indexer.service=dashboard"
+    
+    # Only for development
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+
+# Persistent volumes for data
+volumes:
+  qdrant_storage:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./qdrant_storage
+  
+  qdrant_config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./qdrant_config
+
+# Network for service communication
+networks:
+  default:
+    name: claude-indexer-network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

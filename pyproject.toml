@@ -1,0 +1,281 @@
+[build-system]
+requires = ["hatchling>=1.21.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-code-context"
+version = "1.0.0"
+description = "Semantic context enrichment for Claude Code with local embeddings and direct search capabilities"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Claude Code Context Team", email = "noreply@anthropic.com"},
+]
+maintainers = [
+    {name = "Claude Code Context Team", email = "noreply@anthropic.com"},
+]
+keywords = [
+    "claude-code",
+    "context",
+    "embeddings", 
+    "semantic-search",
+    "code-analysis",
+    "vector-database",
+    "stella",
+    "qdrant"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Text Processing :: Linguistic",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.12"
+dependencies = [
+    # Core dependencies
+    "pydantic>=2.5.0,<3.0.0",
+    "pydantic-settings>=2.1.0,<3.0.0",
+    "click>=8.1.0,<9.0.0",
+    "rich>=13.7.0,<14.0.0",
+    
+    # Vector database
+    "qdrant-client>=1.7.0,<2.0.0",
+    
+    # Embeddings
+    "torch>=2.1.0,<3.0.0",
+    "sentence-transformers>=3.0.0,<4.0.0",
+    "transformers>=4.36.0,<5.0.0",
+    "huggingface-hub>=0.19.0,<1.0.0",
+    "xformers>=0.0.22; sys_platform != 'darwin'",
+    
+    # File processing
+    "tree-sitter>=0.21.3,<1.0.0",
+    "watchdog>=3.0.0,<4.0.0",
+    
+    # Utilities
+    "pathlib2>=2.3.7; python_version<'3.4'",
+    "typing-extensions>=4.8.0",
+    "python-dotenv>=1.0.0,<2.0.0",
+    "requests>=2.31.0,<3.0.0",
+    "aiohttp>=3.9.0,<4.0.0",
+    "aiofiles>=23.2.1,<24.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    # Testing
+    "pytest>=7.4.0,<8.0.0",
+    "pytest-asyncio>=0.23.0,<1.0.0",
+    "pytest-cov>=4.1.0,<5.0.0",
+    "pytest-mock>=3.12.0,<4.0.0",
+    "pytest-benchmark>=4.0.0,<5.0.0",
+    
+    # Code quality
+    "black>=23.11.0,<24.0.0",
+    "isort>=5.13.0,<6.0.0",
+    "flake8>=6.1.0,<7.0.0",
+    "mypy>=1.7.0,<2.0.0",
+    "pre-commit>=3.6.0,<4.0.0",
+    
+    # Documentation
+    "sphinx>=7.2.0,<8.0.0",
+    "sphinx-rtd-theme>=1.3.0,<2.0.0",
+    "sphinx-autodoc-typehints>=1.25.0,<2.0.0",
+]
+performance = [
+    "uvloop>=0.19.0; sys_platform != 'win32'",
+    "orjson>=3.9.0,<4.0.0",
+    "msgpack>=1.0.7,<2.0.0",
+]
+security = [
+    "cryptography>=41.0.0,<42.0.0",
+    "keyring>=24.3.0,<25.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/popperwin/claude-code-context"
+Documentation = "https://github.com/popperwin/claude-code-context#readme"
+Repository = "https://github.com/popperwin/claude-code-context.git"
+Issues = "https://github.com/popperwin/claude-code-context/issues"
+
+[project.scripts]
+claude-indexer = "cli.main:cli"
+claude-code-context = "cli.main:cli"
+ccc-setup = "scripts.setup_project:main"
+
+[tool.hatch.version]
+path = "core/__init__.py"
+
+[tool.hatch.build]
+include = [
+    "core/",
+    "config/",
+    "scripts/", 
+    "templates/",
+    "cli/",
+    "hooks/",
+    "*.md",
+    "*.toml",
+    "*.yml",
+    "*.yaml",
+    "*.sh",
+]
+exclude = [
+    "tests/",
+    "*.pyc",
+    "__pycache__/",
+    ".git/",
+    ".pytest_cache/",
+    "qdrant_storage/",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["core", "config", "scripts", "cli", "hooks"]
+
+[tool.black]
+line-length = 88
+target-version = ['py312']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | qdrant_storage
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 88
+known_first_party = ["core", "config", "scripts", "cli", "hooks"]
+known_third_party = ["pydantic", "click", "qdrant_client", "torch", "transformers"]
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "tree_sitter.*",
+    "sentence_transformers.*",
+    "qdrant_client.*",
+    "watchdog.*",
+    "huggingface_hub.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--cov=core",
+    "--cov=config", 
+    "--cov=scripts",
+    "--cov=cli",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-fail-under=65",
+]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "benchmark: marks tests as benchmarks",
+]
+
+[tool.coverage.run]
+source = ["core", "config", "scripts", "cli", "hooks"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "*/__pycache__/*",
+    "*/.*",
+    "scripts/install_stella.py",  # Sprint 2 component
+    "scripts/setup_project.py",  # Setup utility, not core functionality
+    "core/embeddings/*",         # Sprint 2 component
+    "core/indexer/*",           # Sprint 4 component  
+    "core/search/*",            # Sprint 4 component
+    "core/parser/*",            # Sprint 3 component
+    "cli/*",                    # Sprint 5 component
+    "hooks/*",                  # Sprint 5 component
+    "config/defaults.py",       # Static configuration
+    "config/loader.py",         # Complex config loader for Sprint 2+
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = [
+    "E203",  # whitespace before ':'
+    "E501",  # line too long (handled by black)
+    "W503",  # line break before binary operator
+]
+exclude = [
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.egg-info",
+    ".pytest_cache",
+    ".mypy_cache",
+    "qdrant_storage",
+]
+per-file-ignores = [
+    "__init__.py:F401",  # imported but unused
+]
+
+[tool.bandit]
+exclude_dirs = ["tests", "qdrant_storage"]
+skips = ["B101", "B601"]  # Skip assert_used and shell injection for scripts
+
