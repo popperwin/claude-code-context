@@ -68,6 +68,7 @@ class Visibility(Enum):
     PUBLIC = "public"
     PRIVATE = "private"
     PROTECTED = "protected"
+    PACKAGE_PRIVATE = "package_private"  # Java default visibility
 
 
 class RelationType(Enum):
