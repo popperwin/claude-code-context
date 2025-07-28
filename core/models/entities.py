@@ -214,6 +214,56 @@ class Entity(BaseModel):
         if 'location' in data and 'file_path' in data['location']:
             data['location']['file_path'] = Path(data['location']['file_path'])
         return cls(**data)
+    
+    def to_qdrant_payload(self) -> Dict[str, Any]:
+        """
+        Convert entity to Qdrant payload format for storage and search.
+        
+        Returns:
+            Dictionary suitable for Qdrant payload storage
+        """
+        return {
+            # Core identification
+            "entity_id": self.id,
+            "entity_name": self.name,
+            "qualified_name": self.qualified_name,
+            "entity_type": self.entity_type.value,
+            
+            # Content for search
+            "signature": self.signature or "",
+            "docstring": self.docstring or "",
+            "source_code": self.source_code,
+            "source_hash": self.source_hash,
+            
+            # Location information
+            "file_path": str(self.location.file_path),
+            "start_line": self.location.start_line,
+            "end_line": self.location.end_line,
+            "start_column": self.location.start_column,
+            "end_column": self.location.end_column,
+            "start_byte": self.location.start_byte,
+            "end_byte": self.location.end_byte,
+            
+            # Metadata for filtering
+            "visibility": self.visibility.value,
+            "is_async": self.is_async,
+            "is_test": self.is_test,
+            "is_deprecated": self.is_deprecated,
+            "language": self.language_hint or "",
+            
+            # Relationships
+            "parent_id": self.parent_id or "",
+            "children_count": len(self.children_ids),
+            "dependencies_count": len(self.dependencies),
+            
+            # Timestamps (as ISO strings for Qdrant)
+            "created_at": self.created_at.isoformat(),
+            "last_modified": self.last_modified.isoformat(),
+            
+            # Additional searchable content
+            "is_container": self.is_container,
+            "location_id": self.location.location_id
+        }
 
 
 class ASTNode(BaseModel):

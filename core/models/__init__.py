@@ -8,6 +8,7 @@ from .entities import Entity, EntityType, SourceLocation, Visibility
 from .storage import QdrantPoint, StorageResult, OperationResult
 from .config import ProjectConfig, QdrantConfig, StellaConfig
 from .hooks import HookRequest, HookResponse, CCCQuery
+from .embeddings import EmbeddingResponse, EmbeddingRequest, EmbeddingConfig, EmbeddingStats
 
 __all__ = [
     # Entities
@@ -29,5 +30,11 @@ __all__ = [
     # Hooks
     "HookRequest",
     "HookResponse", 
-    "CCCQuery"
+    "CCCQuery",
+    
+    # Embeddings
+    "EmbeddingResponse",
+    "EmbeddingRequest",
+    "EmbeddingConfig",
+    "EmbeddingStats"
 ]

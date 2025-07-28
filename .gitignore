@@ -66,3 +66,8 @@ sprint*md
 
 # Documentation
 docs/_build/
+
+.benchmarks/
+htmlcov/
+.coverage*
+test-harness/

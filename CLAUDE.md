@@ -126,13 +126,27 @@ claude-indexer watch -p . -c PROJECT_NAME-code
 
 ## Testing Requirements
 
-- Unit tests: 95% coverage minimum
-- Integration tests for each sprint deliverable
+### Coverage Targets by Sprint
+
+Sprint-specific coverage targets reflect the incremental nature of development:
+
+- **Sprint 2**: 35-45% ✅ (Embeddings & Storage foundation)
+- **Sprint 3**: 60-65% (after Tree-sitter integration) 
+- **Sprint 4**: 75-80% (after full indexing pipeline)
+- **Sprint 5**: 85-90% (after CLI/Hook integration)
+- **Sprint 6**: 95%+ (complete system with documentation)
+
+### Test Requirements
+
+- Unit tests for each sprint deliverable
+- Integration tests for sprint completions
 - Performance benchmarks:
   - Indexing: 10k files < 5 min
   - Search: <10ms payload, <50ms semantic
   - Memory: <2GB for 100k files
 - Multi-project isolation tests
+
+**Note**: Lower early-sprint coverage is expected due to future sprint dependencies and proper separation of concerns.
 
 ## Do NOT
 

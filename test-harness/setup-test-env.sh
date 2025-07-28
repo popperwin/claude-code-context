@@ -146,6 +146,73 @@ install_test_dependencies() {
     log_success "Test dependencies installed"
 }
 
+verify_stella_model() {
+    log "Verifying Stella model availability..."
+    
+    source "$TEST_VENV/bin/activate"
+    
+    # Test Stella model loading
+    cd "$PROJECT_ROOT"
+    if python -c "
+import sys
+sys.path.insert(0, '.')
+from core.embeddings.stella import StellaEmbedder
+import asyncio
+
+async def test_stella():
+    embedder = StellaEmbedder()
+    success = await embedder.load_model()
+    if success:
+        print('Stella model loaded successfully')
+        await embedder.unload_model()
+        return True
+    else:
+        print('Failed to load Stella model')
+        return False
+
+result = asyncio.run(test_stella())
+exit(0 if result else 1)
+" 2>"$TEST_LOGS/stella-check.log"; then
+        log_success "Stella model is available and working"
+    else
+        log_warning "Stella model is not available. Run scripts/install_stella.py first"
+        cat "$TEST_LOGS/stella-check.log"
+    fi
+}
+
+setup_performance_monitoring() {
+    log "Setting up performance monitoring..."
+    
+    # Create performance test configuration
+    cat > "$TEST_CONFIGS/performance.json" << EOF
+{
+    "targets": {
+        "embedding_generation_ms": 50,
+        "payload_search_ms": 5,
+        "semantic_search_ms": 50,
+        "hybrid_search_ms": 100,
+        "batch_indexing_entities_per_second": 10
+    },
+    "test_parameters": {
+        "sample_sizes": [10, 50, 100],
+        "concurrent_workers": [1, 3, 5],
+        "timeout_seconds": 300
+    },
+    "monitoring": {
+        "memory_threshold_mb": 1000,
+        "cpu_threshold_percent": 80,
+        "disk_usage_threshold_mb": 500
+    }
+}
+EOF
+
+    # Create performance test results directory
+    mkdir -p "$TEST_ENV_DIR/performance/results"
+    mkdir -p "$TEST_ENV_DIR/performance/reports"
+    
+    log_success "Performance monitoring configured"
+}
+
 create_test_config() {
     log "Creating test configuration..."
     
@@ -168,6 +235,20 @@ export CLAUDE_INDEXER_CONFIG_DIR="$TEST_CONFIGS"
 export CLAUDE_INDEXER_CACHE_DIR="$TEST_ENV_DIR/cache"
 export CLAUDE_INDEXER_LOG_LEVEL="DEBUG"
 
+# Integration and performance test settings
+export CLAUDE_TEST_MODE="integration"
+export INTEGRATION_COLLECTION="integration-test-code"
+export PERFORMANCE_TEST_TIMEOUT=300
+export EMBEDDING_PERFORMANCE_TARGET_MS=50
+export PAYLOAD_SEARCH_TARGET_MS=5
+export SEMANTIC_SEARCH_TARGET_MS=50
+export HYBRID_SEARCH_TARGET_MS=100
+
+# Test data settings
+export REAL_DATA_SAMPLE_SIZE=100
+export SEARCH_TEST_SAMPLE_SIZE=50
+export CONCURRENT_TEST_WORKERS=5
+
 # Python virtual environment activation
 source "$TEST_VENV/bin/activate"
 
@@ -183,6 +264,7 @@ echo "  • Qdrant: http://localhost:$QDRANT_PORT"
 echo "  • Python: $TEST_VENV/bin/python"
 echo "  • Logs: $TEST_LOGS"
 echo "  • Projects: $TEST_PROJECTS"
+echo "  • Performance monitoring: enabled"
 EOF
     
     chmod +x "$TEST_CONFIGS/test-env.sh"
@@ -191,13 +273,15 @@ EOF
 }
 
 main() {
-    log "Setting up isolated test environment for Sprint 1 validation"
+    log "Setting up isolated test environment for Sprint 2 validation"
     
     setup_directories
     setup_python_venv
     setup_docker_network
     setup_test_qdrant
     install_test_dependencies
+    verify_stella_model
+    setup_performance_monitoring
     create_test_config
     
     log_success "Test environment setup complete!"
@@ -209,6 +293,12 @@ main() {
     echo -e "  test-python    - Use isolated Python"
     echo -e "  test-pytest    - Run tests"
     echo -e "  test-cleanup   - Clean up environment"
+    echo
+    echo -e "${GREEN}Available resources:${NC}"
+    echo -e "  • Test Qdrant: http://localhost:$QDRANT_PORT"
+    echo -e "  • Performance configs: $TEST_CONFIGS/performance.json"
+    echo -e "  • Real data generator: tests/fixtures/real_code_samples.py"
+    echo -e "  • Performance results: $TEST_ENV_DIR/performance/results"
     echo
     echo -e "${GREEN}Next steps:${NC}"
     echo -e "  ./run-all-tests.sh"
