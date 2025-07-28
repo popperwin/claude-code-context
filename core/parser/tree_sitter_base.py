@@ -74,16 +74,22 @@ class TreeSitterBase(BaseParser, ABC):
             # Dynamic import of language module
             language_module = __import__(module_name)
             
-            # Get language object - most modern tree-sitter packages use 'language' function
-            if hasattr(language_module, 'language'):
-                # Modern API: module.language() returns PyCapsule that needs wrapping
+            # Get language object - handle different module APIs
+            if self.language == "javascript":
+                # JavaScript module uses 'language' function
                 self.tree_sitter_language = tree_sitter.Language(language_module.language())
             elif self.language == "typescript":
-                # TypeScript requires special handling for TSX
-                if hasattr(language_module, 'tsx'):
-                    self.tree_sitter_language = tree_sitter.Language(language_module.tsx())
+                # TypeScript module - prefer TSX for better JSX support
+                if hasattr(language_module, 'language_tsx'):
+                    # Use TSX language for better JSX/TSX support
+                    self.tree_sitter_language = tree_sitter.Language(language_module.language_tsx())
+                elif hasattr(language_module, 'language_typescript'):
+                    self.tree_sitter_language = tree_sitter.Language(language_module.language_typescript())
                 else:
-                    self.tree_sitter_language = tree_sitter.Language(language_module.TYPESCRIPT())
+                    raise TreeSitterError(f"No suitable language function found in {module_name}")
+            elif hasattr(language_module, 'language'):
+                # Modern API: module.language() returns PyCapsule that needs wrapping
+                self.tree_sitter_language = tree_sitter.Language(language_module.language())
             elif self.language == "cpp":
                 # C++ uses different function name
                 self.tree_sitter_language = tree_sitter.Language(language_module.CPP())

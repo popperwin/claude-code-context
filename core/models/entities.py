@@ -30,11 +30,14 @@ class EntityType(Enum):
     
     # Language-specific
     IMPORT = "import"
+    EXPORT = "export"
     DECORATOR = "decorator"
     TYPE_ALIAS = "type_alias"
+    TYPE = "type"
     INTERFACE = "interface"
     ENUM = "enum"
     STRUCT = "struct"
+    NAMESPACE = "namespace"
 
 
 class Visibility(Enum):
