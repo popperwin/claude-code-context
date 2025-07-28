@@ -71,3 +71,4 @@ docs/_build/
 htmlcov/
 .coverage*
 test-harness/
+tests/results/

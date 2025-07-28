@@ -13,9 +13,9 @@ from datetime import datetime
 import sys
 from pathlib import Path
 
-# Add the test-harness directory to Python path
-test_harness_path = Path(__file__).parent.parent / "test-harness" / "test-env" / "integration" / "performance"
-sys.path.insert(0, str(test_harness_path))
+# Add the results directory to Python path
+results_path = Path(__file__).parent / "results" / "performance"
+sys.path.insert(0, str(results_path))
 
 from regression_framework import (
     PerformanceBaseline,

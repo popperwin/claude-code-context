@@ -860,18 +860,15 @@ class PythonParser(TreeSitterBase):
         # Find import entities
         import_entities = [e for e in entities if e.entity_type == EntityType.IMPORT]
         
-        # Create import relations (file imports module)
-        for import_entity in entities:
-            if import_entity.entity_type == EntityType.IMPORT:
-                module_name = import_entity.metadata.get("module_name", "")
-                
-                relation = Relation.create_import_relation(
-                    f"python::file::{import_entity.location.file_path.stem}",
-                    f"python::module::{module_name}",
-                    context=import_entity.signature,
-                    location=import_entity.location
-                )
-                relations.append(relation)
+        # Create import relations (file imports entity)
+        for import_entity in import_entities:
+            relation = Relation.create_import_relation(
+                f"python::file::{import_entity.location.file_path.stem}",
+                import_entity.id,  # Point to the imported entity, not the module
+                context=import_entity.signature,
+                location=import_entity.location
+            )
+            relations.append(relation)
         
         return relations
     
