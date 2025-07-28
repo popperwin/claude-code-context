@@ -44,6 +44,40 @@ class Visibility(Enum):
     PROTECTED = "protected"
 
 
+class RelationType(Enum):
+    """Comprehensive relation types for code entities"""
+    # Structural relations
+    CONTAINS = "contains"           # Module contains class
+    BELONGS_TO = "belongs_to"       # Method belongs to class
+    
+    # Inheritance relations
+    INHERITS = "inherits"          # Class inheritance
+    IMPLEMENTS = "implements"      # Interface implementation
+    EXTENDS = "extends"            # Extension
+    MIXES_IN = "mixes_in"         # Mixin/trait
+    
+    # Usage relations
+    CALLS = "calls"               # Function calls
+    INSTANTIATES = "instantiates" # Creates instance
+    USES_TYPE = "uses_type"      # Type reference
+    IMPORTS = "imports"           # Import/require
+    EXPORTS = "exports"           # Export/provide
+    
+    # Data flow relations
+    READS = "reads"               # Reads variable
+    WRITES = "writes"             # Writes variable
+    RETURNS = "returns"           # Returns type
+    ACCEPTS = "accepts"           # Accepts parameter
+    
+    # Special relations
+    DECORATES = "decorates"       # Decorator/annotation
+    OVERRIDES = "overrides"       # Method override
+    TESTS = "tests"               # Test relationship
+    REFERENCES = "references"     # General reference
+    DEFINES = "defines"           # Definition relationship
+    DEPENDS_ON = "depends_on"     # Dependency relationship
+
+
 @dataclass(frozen=True)
 class SourceLocation:
     """Precise source file location with byte and line information"""
@@ -321,21 +355,22 @@ class ASTNode(BaseModel):
 
 class Relation(BaseModel):
     """Relationship between entities"""
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, use_enum_values=False)
     
     # Relationship identification
     id: str
-    relation_type: str  # calls, imports, extends, implements, uses, etc.
+    relation_type: RelationType
     
     # Entities involved
     source_entity_id: str
     target_entity_id: str
     
-    # Context
+    # Context and location
     context: Optional[str] = None  # Where the relation occurs
-    strength: float = Field(default=1.0, ge=0.0, le=1.0)  # Relation strength
+    location: Optional[SourceLocation] = None  # Source location of relation
     
-    # Metadata
+    # Strength and metadata
+    strength: float = Field(default=1.0, ge=0.0, le=1.0)  # Relation strength
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.now)
     
@@ -347,34 +382,23 @@ class Relation(BaseModel):
             raise ValueError('Relation ID cannot be empty')
         return v
     
-    @field_validator('relation_type')
-    @classmethod  
-    def validate_relation_type(cls, v: str) -> str:
-        """Validate relation type"""
-        valid_types = {
-            'calls', 'imports', 'extends', 'implements', 'uses', 
-            'references', 'defines', 'overrides', 'decorates',
-            'contains', 'depends_on', 'similar_to'
-        }  
-        if v.lower() not in valid_types:
-            raise ValueError(f'Invalid relation type: {v}')
-        return v.lower()
-    
     @classmethod
     def create_call_relation(
         cls, 
         caller_id: str, 
         callee_id: str, 
-        context: Optional[str] = None
+        context: Optional[str] = None,
+        location: Optional[SourceLocation] = None
     ) -> 'Relation':
         """Create a function call relation"""
-        relation_id = f"call:{caller_id}:{callee_id}"
+        relation_id = f"call::{caller_id}::{callee_id}"
         return cls(
             id=relation_id,
-            relation_type="calls",
+            relation_type=RelationType.CALLS,
             source_entity_id=caller_id,
             target_entity_id=callee_id,
-            context=context
+            context=context,
+            location=location
         )
     
     @classmethod
@@ -382,14 +406,83 @@ class Relation(BaseModel):
         cls,
         importer_id: str,
         imported_id: str,
-        context: Optional[str] = None
+        context: Optional[str] = None,
+        location: Optional[SourceLocation] = None
     ) -> 'Relation':
         """Create an import relation"""
-        relation_id = f"import:{importer_id}:{imported_id}"
+        relation_id = f"import::{importer_id}::{imported_id}"
         return cls(
             id=relation_id,
-            relation_type="imports", 
+            relation_type=RelationType.IMPORTS, 
             source_entity_id=importer_id,
             target_entity_id=imported_id,
-            context=context
+            context=context,
+            location=location
         )
+    
+    @classmethod
+    def create_inheritance_relation(
+        cls,
+        child_id: str,
+        parent_id: str,
+        context: Optional[str] = None,
+        location: Optional[SourceLocation] = None
+    ) -> 'Relation':
+        """Create an inheritance relation"""
+        relation_id = f"inherits::{child_id}::{parent_id}"
+        return cls(
+            id=relation_id,
+            relation_type=RelationType.INHERITS,
+            source_entity_id=child_id,
+            target_entity_id=parent_id,
+            context=context,
+            location=location
+        )
+    
+    @classmethod
+    def create_contains_relation(
+        cls,
+        container_id: str,
+        contained_id: str,
+        context: Optional[str] = None,
+        location: Optional[SourceLocation] = None
+    ) -> 'Relation':
+        """Create a containment relation"""
+        relation_id = f"contains::{container_id}::{contained_id}"
+        return cls(
+            id=relation_id,
+            relation_type=RelationType.CONTAINS,
+            source_entity_id=container_id,
+            target_entity_id=contained_id,
+            context=context,
+            location=location
+        )
+    
+    def to_qdrant_payload(self) -> Dict[str, Any]:
+        """
+        Convert relation to Qdrant payload format.
+        
+        Returns:
+            Dictionary suitable for Qdrant payload storage
+        """
+        payload = {
+            "relation_id": self.id,
+            "relation_type": self.relation_type.value,
+            "source_entity_id": self.source_entity_id,
+            "target_entity_id": self.target_entity_id,
+            "context": self.context or "",
+            "strength": self.strength,
+            "created_at": self.created_at.isoformat()
+        }
+        
+        # Add location if available
+        if self.location:
+            payload.update({
+                "source_file_path": str(self.location.file_path),
+                "source_start_line": self.location.start_line,
+                "source_end_line": self.location.end_line,
+                "source_start_column": self.location.start_column,
+                "source_end_column": self.location.end_column
+            })
+        
+        return payload
