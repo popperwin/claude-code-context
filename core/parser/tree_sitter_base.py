@@ -74,8 +74,11 @@ class TreeSitterBase(BaseParser, ABC):
             # Dynamic import of language module
             language_module = __import__(module_name)
             
-            # Get language object - handle special cases
-            if self.language == "typescript":
+            # Get language object - most modern tree-sitter packages use 'language' function
+            if hasattr(language_module, 'language'):
+                # Modern API: module.language() returns PyCapsule that needs wrapping
+                self.tree_sitter_language = tree_sitter.Language(language_module.language())
+            elif self.language == "typescript":
                 # TypeScript requires special handling for TSX
                 if hasattr(language_module, 'tsx'):
                     self.tree_sitter_language = tree_sitter.Language(language_module.tsx())
@@ -85,15 +88,14 @@ class TreeSitterBase(BaseParser, ABC):
                 # C++ uses different function name
                 self.tree_sitter_language = tree_sitter.Language(language_module.CPP())
             else:
-                # Standard case: language name in uppercase
+                # Legacy API: try uppercase then lowercase function names
                 lang_func = getattr(language_module, self.language.upper(), None)
                 if lang_func is None:
-                    # Fallback to lowercase
                     lang_func = getattr(language_module, self.language.lower())
                 
                 self.tree_sitter_language = tree_sitter.Language(lang_func())
             
-            self.parser.set_language(self.tree_sitter_language)
+            self.parser.language = self.tree_sitter_language
             logger.debug(f"Successfully loaded {self.language} Tree-sitter language")
             
         except ImportError as e:
@@ -202,7 +204,7 @@ class TreeSitterBase(BaseParser, ABC):
                 parse_time=self._get_elapsed_time(),
                 file_size=file_size,
                 file_hash=file_hash,
-                tree_sitter_version=tree_sitter.__version__,
+                tree_sitter_version=getattr(tree_sitter, '__version__', 'unknown'),
                 parser_version=getattr(self, "__version__", "1.0.0"),
                 syntax_errors=syntax_errors,
                 partial_parse=has_errors,
@@ -389,7 +391,16 @@ class TreeSitterBase(BaseParser, ABC):
         Returns:
             Text content of the node
         """
-        return content[node.start_byte:node.end_byte]
+        # Tree-sitter works with byte offsets, but we need to convert to character offsets
+        # for proper Unicode handling
+        try:
+            content_bytes = content.encode('utf-8')
+            node_bytes = content_bytes[node.start_byte:node.end_byte]
+            return node_bytes.decode('utf-8')
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            # Fallback to simple string slicing if encoding fails
+            logger.warning(f"Unicode handling failed for node at {node.start_byte}-{node.end_byte}")
+            return content[node.start_byte:node.end_byte]
     
     def find_child_by_type(
         self, 
