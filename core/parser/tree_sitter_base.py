@@ -37,6 +37,7 @@ class TreeSitterBase(BaseParser, ABC):
         "javascript": "tree_sitter_javascript",
         "typescript": "tree_sitter_typescript", 
         "html": "tree_sitter_html",
+        "css": "tree_sitter_css",
         "go": "tree_sitter_go",
         "rust": "tree_sitter_rust",
         "java": "tree_sitter_java",
