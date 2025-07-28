@@ -38,6 +38,16 @@ class EntityType(Enum):
     ENUM = "enum"
     STRUCT = "struct"
     NAMESPACE = "namespace"
+    
+    # HTML-specific
+    HTML_ELEMENT = "html_element"
+    HTML_COMPONENT = "html_component"
+    HTML_FORM = "html_form"
+    HTML_MEDIA = "html_media"
+    HTML_LINK = "html_link"
+    HTML_META = "html_meta"
+    HTML_SCRIPT = "html_script"
+    HTML_STYLE = "html_style"
 
 
 class Visibility(Enum):
@@ -339,7 +349,7 @@ class ASTNode(BaseModel):
     def validate_language(cls, v: str) -> str:
         """Validate supported language"""
         supported = {
-            'python', 'javascript', 'typescript', 'go', 'rust', 
+            'python', 'javascript', 'typescript', 'html', 'go', 'rust', 
             'java', 'cpp', 'c', 'csharp', 'ruby', 'php'
         }
         if v.lower() not in supported:
