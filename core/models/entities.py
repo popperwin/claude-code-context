@@ -38,6 +38,9 @@ class EntityType(Enum):
     ENUM = "enum"
     STRUCT = "struct"
     NAMESPACE = "namespace"
+    TRAIT = "trait"
+    IMPLEMENTATION = "implementation"
+    MACRO = "macro"
     
     # HTML-specific
     HTML_ELEMENT = "html_element"
