@@ -198,6 +198,112 @@ Example usage:
 How to implement auth <ccc>JWT authentication examples</ccc> in my API?
 ```
 
+## Intelligent Search Optimization
+
+The QueryAnalyzer automatically selects the optimal search strategy based on query patterns. Understanding these patterns helps you write more effective search queries.
+
+### Search Mode Classification
+
+**Payload Search** - Fast exact matching for:
+- **Quoted strings**: `"ExactFunctionName"` or `'SpecificClass'`
+- **Identifiers**: `name:UserManager`, `id:auth-service-123`
+- **File references**: `file:auth.py`, `path:/src/models`
+- **Short terms**: `login`, `database`, `config`
+
+**Semantic Search** - AI-powered understanding for:
+- **How-to queries**: `how to implement JWT authentication`
+- **Explanatory requests**: `explain the database connection pattern`
+- **Find patterns**: `find functions that handle user validation`
+- **Show examples**: `show me error handling approaches`
+- **Natural language**: `what manages user sessions in this app`
+
+**Hybrid Search** - Balanced approach for:
+- **Code with context**: `async function error handling`
+- **Mixed patterns**: `class UserModel in models.py`
+- **Medium complexity**: `authentication system architecture`
+- **Ambiguous queries**: `database connection manager`
+
+### Query Optimization Tips
+
+**For Fastest Results (Payload Search):**
+```
+# Good: Direct, specific terms
+<ccc>UserAuthentication</ccc>
+<ccc>name:"LoginHandler"</ccc>
+<ccc>file:auth.py</ccc>
+
+# Avoid: Long descriptive phrases
+<ccc>how does the user authentication system work</ccc>
+```
+
+**For Best Semantic Understanding:**
+```
+# Good: Natural language with clear intent
+<ccc>how to implement password hashing securely</ccc>
+<ccc>find all functions that validate user input</ccc>
+<ccc>show me examples of error handling patterns</ccc>
+
+# Avoid: Single words or code fragments
+<ccc>hash</ccc>
+<ccc>def validate</ccc>
+```
+
+**For Comprehensive Coverage (Hybrid):**
+```
+# Good: Mix of specific and contextual terms
+<ccc>async database operations with error handling</ccc>
+<ccc>user authentication middleware implementation</ccc>
+<ccc>API endpoint validation and security</ccc>
+```
+
+### Advanced Search Patterns
+
+**Entity-Specific Searches:**
+- Functions: `def authenticate_user`, `async login handler`
+- Classes: `class UserModel`, `authentication service class`
+- Files: `models.py user schema`, `auth/*.py`
+- Configuration: `config.json database`, `settings authentication`
+
+**Relationship Searches:**
+- Dependencies: `import user models`, `uses authentication service`
+- Inheritance: `extends BaseUser`, `implements AuthInterface`
+- Patterns: `decorator pattern auth`, `singleton database connection`
+
+**Contextual Searches:**
+- Error handling: `try catch authentication`, `error handling login`
+- Security: `password validation`, `JWT token verification`
+- Performance: `async database queries`, `caching user sessions`
+
+### Query Examples by Use Case
+
+**Learning Codebase:**
+```
+<ccc>how does user authentication work in this application</ccc>
+<ccc>explain the database schema and relationships</ccc>
+<ccc>show me the main application entry points</ccc>
+```
+
+**Implementation Help:**
+```
+<ccc>password hashing and validation examples</ccc>
+<ccc>async error handling patterns</ccc>
+<ccc>JWT token implementation and verification</ccc>
+```
+
+**Debugging Assistance:**
+```
+<ccc>find functions that handle database connection errors</ccc>
+<ccc>authentication middleware and session management</ccc>
+<ccc>logging and error reporting mechanisms</ccc>
+```
+
+**Code Review:**
+```
+<ccc>security validation and input sanitization</ccc>
+<ccc>error handling and exception management</ccc>
+<ccc>test coverage for authentication functions</ccc>
+```
+
 ## Current Status
 
 Project architecture and requirements are fully defined. Implementation has not started.

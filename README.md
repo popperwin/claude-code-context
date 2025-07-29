@@ -147,25 +147,102 @@ claude-indexer stats -c my-project-code
 
 ### Advanced Claude Code Integration
 
+The system uses intelligent QueryAnalyzer to automatically optimize your searches. Understanding these patterns helps you get better results faster.
+
+#### Search Strategy Guide
+
+**🎯 For Exact Matches (Fastest - <10ms):**
+```
+# Use quotes for exact function/class names
+I need to understand <ccc>"UserAuthenticationService"</ccc> implementation.
+
+# Use prefixes for specific searches  
+Help me debug <ccc>name:LoginHandler</ccc> issues.
+
+# Reference specific files
+Show me <ccc>file:auth.py</ccc> authentication logic.
+```
+
+**🧠 For Conceptual Understanding (AI-Powered):**
+```
+# Use natural language for explanations
+<ccc>how does user authentication work in this application</ccc>
+
+# Ask for patterns and examples
+<ccc>show me error handling patterns used in this codebase</ccc>
+
+# Request architectural insights
+<ccc>explain the database connection and session management</ccc>
+```
+
+**⚖️ For Comprehensive Coverage (Balanced):**
+```
+# Combine specific terms with context
+<ccc>async function error handling patterns</ccc>
+
+# Mix code terms with descriptive context
+<ccc>JWT token validation and middleware implementation</ccc>
+
+# Search across related components
+<ccc>user authentication database models and API endpoints</ccc>
+```
+
+#### Query Optimization Examples
+
 **Function Implementation:**
 ```
-I need to implement password validation <ccc>password validation security hash bcrypt</ccc> for user registration.
+# Good: Specific + contextual
+I need to implement password validation <ccc>password hashing bcrypt security validation</ccc> for user registration.
+
+# Better: Natural language for understanding
+How should I implement <ccc>secure password validation with hashing and salting</ccc> in this codebase?
 ```
 
 **Debugging Help:**
 ```
-This error is confusing <ccc>database connection error timeout retry</ccc>, how should I handle it?
+# Good: Specific error context
+This error is confusing <ccc>database connection timeout retry logic</ccc>, how should I handle it?
+
+# Better: Natural language for patterns
+<ccc>find functions that handle database connection errors and recovery</ccc>
 ```
 
 **Architecture Understanding:**
 ```
-Explain the data flow <ccc>data models database schema relationships</ccc> in this application.
+# Good: Conceptual query
+Explain the data flow <ccc>data models database relationships schema</ccc> in this application.
+
+# Better: Natural explanation request
+<ccc>how does data flow from API endpoints through models to the database</ccc>
 ```
 
 **Code Patterns:**
 ```
-Show me how to implement <ccc>async operations promises concurrency</ccc> in this codebase style.
+# Good: Pattern with context
+Show me how to implement <ccc>async operations error handling concurrency</ccc> in this codebase style.
+
+# Better: Example-focused query
+<ccc>show me examples of async error handling and concurrency patterns</ccc>
 ```
+
+#### Pro Tips for Better Results
+
+**📊 Query Length Guidelines:**
+- **1-2 words**: Perfect for exact matches (`login`, `UserModel`)
+- **3-5 words**: Good for hybrid searches (`async error handling`)  
+- **6+ words**: Best for semantic searches (`how to implement secure authentication`)
+
+**🎯 Pattern Recognition:**
+- **Quoted text**: `"ExactFunctionName"` → Exact payload search
+- **Prefixes**: `name:`, `file:`, `id:` → Targeted payload search
+- **Questions**: `how`, `what`, `explain` → Semantic understanding
+- **Commands**: `find`, `show`, `help` → Semantic examples
+
+**🚀 Performance Optimization:**
+- Use exact matches when you know the specific name
+- Use semantic searches for learning and exploration
+- Combine both approaches for comprehensive coverage
+- Keep queries focused and relevant to your current task
 
 ## 🛠 Management Commands
 

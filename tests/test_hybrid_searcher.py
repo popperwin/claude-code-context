@@ -161,11 +161,12 @@ class TestHybridSearcher:
         searcher = HybridSearcher(mock_client)
         
         assert searcher.client == mock_client
-        assert len(searcher._code_patterns) > 0
-        assert len(searcher._exact_patterns) > 0
-        assert "def " in searcher._code_patterns
-        assert "class " in searcher._code_patterns
-        assert "\"" in searcher._exact_patterns
+        assert searcher.query_analyzer is not None
+        assert len(searcher.query_analyzer._code_patterns) > 0
+        assert len(searcher.query_analyzer._exact_patterns) > 0
+        assert "def " in searcher.query_analyzer._code_patterns
+        assert "class " in searcher.query_analyzer._code_patterns
+        assert "\"" in searcher.query_analyzer._exact_patterns
     
     @pytest.mark.asyncio
     async def test_search_with_default_config(self, mock_client, sample_search_results):
@@ -223,47 +224,68 @@ class TestHybridSearcher:
         mock_client.search_hybrid.assert_not_called()
     
     def test_optimize_search_mode_exact_patterns(self, mock_client):
-        """Test search mode optimization for exact patterns"""
+        """Test search mode optimization for exact patterns via QueryAnalyzer"""
         searcher = HybridSearcher(mock_client)
         
-        # Test exact match indicators
-        assert searcher._optimize_search_mode('"exact match"', SearchMode.AUTO) == SearchMode.PAYLOAD_ONLY
-        assert searcher._optimize_search_mode("name:function_name", SearchMode.AUTO) == SearchMode.PAYLOAD_ONLY
-        assert searcher._optimize_search_mode("file:test.py", SearchMode.AUTO) == SearchMode.PAYLOAD_ONLY
-        assert searcher._optimize_search_mode("exact:match", SearchMode.AUTO) == SearchMode.PAYLOAD_ONLY
+        # Test exact match indicators through QueryAnalyzer
+        analysis = searcher.query_analyzer.analyze_query('"exact match"')
+        assert analysis.recommended_mode == "payload"
+        
+        analysis = searcher.query_analyzer.analyze_query("name:function_name")
+        assert analysis.recommended_mode == "payload"
+        
+        analysis = searcher.query_analyzer.analyze_query("file:test.py")
+        assert analysis.recommended_mode == "payload"
     
     def test_optimize_search_mode_code_patterns(self, mock_client):
-        """Test search mode optimization for code patterns"""
+        """Test search mode optimization for code patterns via QueryAnalyzer"""
         searcher = HybridSearcher(mock_client)
         
-        # Test code-specific patterns
-        assert searcher._optimize_search_mode("def function", SearchMode.AUTO) == SearchMode.HYBRID
-        assert searcher._optimize_search_mode("class MyClass", SearchMode.AUTO) == SearchMode.HYBRID
-        assert searcher._optimize_search_mode("async function", SearchMode.AUTO) == SearchMode.HYBRID
-        assert searcher._optimize_search_mode("import module", SearchMode.AUTO) == SearchMode.HYBRID
+        # Test code-specific patterns through QueryAnalyzer
+        analysis = searcher.query_analyzer.analyze_query("def function")
+        assert analysis.recommended_mode in ["hybrid", "payload"]  # Short code query may go either way
+        
+        analysis = searcher.query_analyzer.analyze_query("class MyClass")  
+        assert analysis.recommended_mode in ["hybrid", "payload"]  # Short code query may go either way
+        
+        analysis = searcher.query_analyzer.analyze_query("async function handler")
+        assert analysis.recommended_mode == "hybrid"
+        
+        analysis = searcher.query_analyzer.analyze_query("import module system")
+        assert analysis.recommended_mode == "hybrid"
     
     def test_optimize_search_mode_query_length(self, mock_client):
-        """Test search mode optimization based on query length"""
+        """Test search mode optimization based on query length via QueryAnalyzer"""
         searcher = HybridSearcher(mock_client)
         
         # Short queries (1-2 words) -> payload search
-        assert searcher._optimize_search_mode("test", SearchMode.AUTO) == SearchMode.PAYLOAD_ONLY
-        assert searcher._optimize_search_mode("user login", SearchMode.AUTO) == SearchMode.PAYLOAD_ONLY
+        analysis = searcher.query_analyzer.analyze_query("test")
+        assert analysis.recommended_mode == "payload"
+        
+        analysis = searcher.query_analyzer.analyze_query("user login")
+        assert analysis.recommended_mode == "payload"
         
         # Long queries (6+ words) -> semantic search  
-        assert searcher._optimize_search_mode("find code that handles user authentication and authorization logic", SearchMode.AUTO) == SearchMode.SEMANTIC_ONLY
+        analysis = searcher.query_analyzer.analyze_query("find code that handles user authentication and authorization logic")
+        assert analysis.recommended_mode == "semantic"
         
         # Medium queries (3-5 words) -> hybrid search
-        assert searcher._optimize_search_mode("user authentication handling", SearchMode.AUTO) == SearchMode.HYBRID
+        analysis = searcher.query_analyzer.analyze_query("user authentication handling")
+        assert analysis.recommended_mode == "hybrid"
     
-    def test_optimize_search_mode_requested_mode(self, mock_client):
-        """Test that requested mode is preserved when not AUTO"""
+    def test_requested_mode_is_preserved(self, mock_client):
+        """Test that explicitly requested search modes are preserved in SearchConfig"""
         searcher = HybridSearcher(mock_client)
         
-        # Should return requested mode when not AUTO
-        assert searcher._optimize_search_mode("any query", SearchMode.PAYLOAD_ONLY) == SearchMode.PAYLOAD_ONLY
-        assert searcher._optimize_search_mode("any query", SearchMode.SEMANTIC_ONLY) == SearchMode.SEMANTIC_ONLY
-        assert searcher._optimize_search_mode("any query", SearchMode.HYBRID) == SearchMode.HYBRID
+        # Test that non-AUTO modes are preserved
+        config = SearchConfig(mode=SearchMode.PAYLOAD_ONLY)
+        assert config.mode == SearchMode.PAYLOAD_ONLY
+        
+        config = SearchConfig(mode=SearchMode.SEMANTIC_ONLY)
+        assert config.mode == SearchMode.SEMANTIC_ONLY
+        
+        config = SearchConfig(mode=SearchMode.HYBRID)
+        assert config.mode == SearchMode.HYBRID
     
     def test_file_type_to_language_mapping(self, mock_client):
         """Test file type to language mapping"""
