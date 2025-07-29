@@ -856,13 +856,25 @@ class HybridQdrantClient:
                 self.client.get_collection, collection_name
             )
             
+            # Handle OptimizersStatusOneOf enum properly
+            optimizer_status = None
+            if info.optimizer_status:
+                # OptimizersStatusOneOf is an enum-like object, access its value directly
+                if hasattr(info.optimizer_status, 'value'):
+                    optimizer_status = info.optimizer_status.value
+                elif hasattr(info.optimizer_status, 'name'):
+                    optimizer_status = info.optimizer_status.name.lower()
+                else:
+                    # Fallback: convert to string and extract status
+                    optimizer_status = str(info.optimizer_status).split('.')[-1].lower()
+            
             return {
                 "name": collection_name,
                 "vectors_count": info.vectors_count,
                 "indexed_vectors_count": info.indexed_vectors_count,
                 "points_count": info.points_count,
                 "status": info.status,
-                "optimizer_status": info.optimizer_status.status if info.optimizer_status else None,
+                "optimizer_status": optimizer_status,
                 "config": {
                     "vector_size": info.config.params.vectors.size,
                     "distance": info.config.params.vectors.distance.name
