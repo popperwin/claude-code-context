@@ -62,11 +62,11 @@ class TestIndexingJobConfig:
         """Test config creation with default values"""
         config = IndexingJobConfig(
             project_path=tmp_path,
-            collection_name="test-collection"
+            project_name="test-collection"
         )
         
         assert config.project_path == tmp_path
-        assert config.collection_name == "test-collection"
+        assert config.project_name == "test-collection"
         assert config.incremental is True
         assert config.max_workers == 4
         assert config.batch_size == 100
@@ -88,7 +88,7 @@ class TestIndexingJobConfig:
         
         config = IndexingJobConfig(
             project_path=tmp_path,
-            collection_name="custom-collection",
+            project_name="custom-collection",
             incremental=False,
             max_workers=8,
             batch_size=50,
@@ -300,7 +300,7 @@ class TestHybridIndexer:
         # Create config
         config = IndexingJobConfig(
             project_path=tmp_path,
-            collection_name="test",
+            project_name="test",
             include_patterns=["*.py", "*.js"],
             exclude_patterns=["node_modules/*"]
         )
@@ -335,18 +335,22 @@ class TestHybridIndexer:
         
         config = IndexingJobConfig(
             project_path=tmp_path,
-            collection_name="test",
+            project_name="test",
             incremental=True
         )
         metrics = IndexingJobMetrics()
         
-        # Test filtering
-        result = await indexer._filter_incremental_files(all_files, config, metrics)
+        # Test filtering - need to derive collection name from project name
+        from core.storage.schemas import CollectionManager, CollectionType
+        collection_manager = CollectionManager(project_name=config.project_name)
+        collection_name = collection_manager.get_collection_name(config.collection_type)
+        
+        result = await indexer._filter_incremental_files(all_files, collection_name, metrics)
         
         assert result == changed_files
         assert metrics.files_skipped == 1  # 3 total - 2 changed = 1 skipped
         indexer.incremental_indexer.get_changed_files.assert_called_once_with(
-            all_files, "test"
+            all_files, collection_name
         )
     
     @pytest.mark.asyncio
@@ -378,7 +382,7 @@ class TestHybridIndexer:
         # Mock parser pipeline
         mock_components["parser"].parse_files.return_value = (parse_results, mock_stats)
         
-        config = IndexingJobConfig(project_path=tmp_path, collection_name="test")
+        config = IndexingJobConfig(project_path=tmp_path, project_name="test")
         metrics = IndexingJobMetrics()
         
         # Test parsing
@@ -438,7 +442,7 @@ class TestHybridIndexer:
     async def test_index_entities(self, indexer, mock_components):
         """Test entity indexing with progress tracking"""
         entities = [Mock(spec=Entity), Mock(spec=Entity)]
-        collection_name = "test-collection"
+        project_name = "test-collection"
         metrics = IndexingJobMetrics()
         
         # Mock indexing result
@@ -454,6 +458,11 @@ class TestHybridIndexer:
         indexer.batch_indexer.remove_progress_callback = Mock()
         
         # Test indexing
+        # Get actual collection name from project name using CollectionManager
+        from core.storage.schemas import CollectionManager, CollectionType
+        collection_manager = CollectionManager(project_name=project_name)
+        collection_name = collection_manager.get_collection_name(CollectionType.CODE)
+        
         await indexer._index_entities(entities, collection_name, metrics, show_progress=True)
         
         assert metrics.entities_indexed == 2
@@ -477,20 +486,24 @@ class TestHybridIndexer:
     async def test_update_cache_state(self, indexer, mock_components, tmp_path):
         """Test cache state updates"""
         files = [tmp_path / "file1.py", tmp_path / "file2.py"]
-        config = IndexingJobConfig(project_path=tmp_path, collection_name="test")
+        config = IndexingJobConfig(project_path=tmp_path, project_name="test")
         metrics = IndexingJobMetrics()
         
         # Mock cache manager
         mock_components["cache"].update_file_cache = AsyncMock()
         
-        # Test cache update
-        await indexer._update_cache_state(files, config, metrics)
+        # Test cache update - need to derive collection name from project name
+        from core.storage.schemas import CollectionManager, CollectionType
+        collection_manager = CollectionManager(project_name=config.project_name)
+        collection_name = collection_manager.get_collection_name(config.collection_type)
+        
+        await indexer._update_cache_state(files, collection_name, metrics)
         
         # Verify cache updates
         assert mock_components["cache"].update_file_cache.call_count == 2
         for file_path in files:
             mock_components["cache"].update_file_cache.assert_any_call(
-                file_path, "test"
+                file_path, collection_name
             )
     
     @pytest.mark.asyncio
@@ -517,7 +530,7 @@ class TestHybridIndexer:
         call_args = indexer.index_project.call_args[0][0]  # First arg is config
         
         assert call_args.project_path == test_file.parent
-        assert call_args.collection_name == "test-collection"
+        assert call_args.project_name == "test-collection"
         assert call_args.incremental is False  # force_reindex=True
         assert call_args.max_workers == 1
         assert call_args.batch_size == 10
@@ -577,7 +590,7 @@ class TestHybridIndexerIntegration:
         
         config = IndexingJobConfig(
             project_path=tmp_path,
-            collection_name="empty-test",
+            project_name="empty-test",
             incremental=False
         )
         
@@ -601,7 +614,12 @@ class TestHybridIndexerIntegration:
         mock_parser.registry.discover_files.side_effect = Exception("Discovery failed")
         
         mock_embedder = Mock()
+        mock_embedder.dimensions = 1024
+        
+        # Mock storage client properly for async operations
         mock_storage = Mock()
+        mock_storage.get_collection_info = AsyncMock(return_value=None)  # Collection doesn't exist
+        mock_storage.create_collection = AsyncMock(return_value=Mock(success=True))
         
         indexer = HybridIndexer(
             parser_pipeline=mock_parser,
@@ -611,7 +629,7 @@ class TestHybridIndexerIntegration:
         
         config = IndexingJobConfig(
             project_path=tmp_path,
-            collection_name="error-test"
+            project_name="error-test"
         )
         
         # Test error handling
