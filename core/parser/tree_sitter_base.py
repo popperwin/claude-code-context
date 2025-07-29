@@ -236,35 +236,73 @@ class TreeSitterBase(BaseParser, ABC):
         content: str
     ) -> List[Dict[str, Any]]:
         """
-        Extract syntax errors from Tree-sitter AST.
+        Extract syntax errors from Tree-sitter AST with enhanced context.
         
         Args:
             tree: Tree-sitter AST
             content: Source code content
             
         Returns:
-            List of syntax error dictionaries
+            List of syntax error dictionaries with detailed context
         """
         errors = []
+        error_count = 0
+        max_errors = 50  # Limit errors to prevent memory issues
         
-        def find_errors(node: tree_sitter.Node) -> None:
-            """Recursively find error nodes"""
-            if node.type == "ERROR" or node.is_missing:
-                error_text = content[node.start_byte:node.end_byte]
-                errors.append({
-                    "type": "SYNTAX_ERROR" if node.type == "ERROR" else "MISSING_NODE",
-                    "message": f"Syntax error: {error_text[:50]}..." if len(error_text) > 50 else f"Syntax error: {error_text}",
-                    "line": node.start_point[0] + 1,
-                    "column": node.start_point[1],
-                    "start_byte": node.start_byte,
-                    "end_byte": node.end_byte,
-                    "text": error_text
-                })
+        def find_errors(node: tree_sitter.Node, depth: int = 0) -> None:
+            """Recursively find error nodes with context"""
+            nonlocal error_count
             
-            for child in node.children:
-                find_errors(child)
+            if error_count >= max_errors:
+                return
+            
+            if node.type == "ERROR" or node.is_missing:
+                try:
+                    # Extract error text safely
+                    error_text = self._safe_extract_text(node, content)
+                    
+                    # Get surrounding context for better error reporting
+                    line_start = max(0, node.start_point[0] - 2)
+                    line_end = min(len(content.split('\n')), node.start_point[0] + 3)
+                    lines = content.split('\n')[line_start:line_end]
+                    context = '\n'.join(lines)
+                    
+                    # Determine error severity
+                    severity = self._classify_error_severity(node, error_text)
+                    
+                    errors.append({
+                        "type": "SYNTAX_ERROR" if node.type == "ERROR" else "MISSING_NODE",
+                        "severity": severity,
+                        "message": self._generate_error_message(node, error_text),
+                        "line": node.start_point[0] + 1,
+                        "column": node.start_point[1],
+                        "start_byte": node.start_byte,
+                        "end_byte": node.end_byte,
+                        "text": error_text,
+                        "context": context[:200] + "..." if len(context) > 200 else context,
+                        "depth": depth,
+                        "parent_type": node.parent.type if node.parent else None,
+                        "expected_type": self._infer_expected_type(node)
+                    })
+                    error_count += 1
+                    
+                except Exception as e:
+                    # Fallback error entry if context extraction fails
+                    logger.warning(f"Error context extraction failed: {e}")
+                    errors.append({
+                        "type": "EXTRACTION_ERROR",
+                        "severity": "low",
+                        "message": f"Failed to extract error context: {e}",
+                        "line": node.start_point[0] + 1 if hasattr(node, 'start_point') else 0,
+                        "column": node.start_point[1] if hasattr(node, 'start_point') else 0
+                    })
+            
+            # Continue searching children with depth limit
+            if depth < 20:  # Prevent infinite recursion
+                for child in node.children:
+                    find_errors(child, depth + 1)
         
-        if tree.root_node.has_error:
+        if tree.root_node and tree.root_node.has_error:
             find_errors(tree.root_node)
         
         return errors
@@ -277,7 +315,7 @@ class TreeSitterBase(BaseParser, ABC):
         max_nodes: int = 1000
     ) -> List[ASTNode]:
         """
-        Extract AST nodes for detailed analysis (optional).
+        Extract AST nodes for detailed analysis with memory optimization.
         
         Args:
             tree: Tree-sitter AST
@@ -290,61 +328,86 @@ class TreeSitterBase(BaseParser, ABC):
         """
         ast_nodes = []
         node_count = 0
+        max_depth = 15  # Prevent excessive recursion
         
-        def extract_node(node: tree_sitter.Node, parent_id: Optional[str] = None) -> None:
+        def extract_node(
+            node: tree_sitter.Node, 
+            parent_id: Optional[str] = None,
+            depth: int = 0
+        ) -> None:
             nonlocal node_count
             
-            if node_count >= max_nodes:
+            # Multiple termination conditions for safety
+            if node_count >= max_nodes or depth >= max_depth:
                 return
             
-            node_id = f"ast_{node.start_byte}_{node.end_byte}"
-            node_text = content[node.start_byte:node.end_byte]
-            
-            # Limit text length
-            if len(node_text) > 200:
-                node_text = node_text[:200] + "..."
-            
-            location = SourceLocation(
-                file_path=file_path,
-                start_line=node.start_point[0] + 1,
-                end_line=node.end_point[0] + 1,
-                start_column=node.start_point[1],
-                end_column=node.end_point[1],
-                start_byte=node.start_byte,
-                end_byte=node.end_byte
-            )
-            
-            ast_node = ASTNode(
-                node_id=node_id,
-                node_type=node.type,
-                language=self.language,
-                location=location,
-                text=node_text,
-                parent_id=parent_id,
-                children_ids=[],  # Will be filled in later
-                is_named=node.is_named,
-                is_error=node.type == "ERROR"
-            )
-            
-            ast_nodes.append(ast_node)
-            node_count += 1
-            
-            # Extract children (up to reasonable depth)
-            if len(node.children) > 0 and node_count < max_nodes:
-                for child in node.children:
-                    extract_node(child, node_id)
+            try:
+                # Generate safe node ID
+                node_id = f"ast_{node.start_byte}_{node.end_byte}_{node_count}"
+                
+                # Safe text extraction with fallback
+                node_text = self._safe_extract_text(node, content, max_length=200)
+                
+                # Validate node bounds
+                if not self._validate_node_bounds(node, content):
+                    logger.warning(f"Invalid node bounds: {node.start_byte}-{node.end_byte}")
+                    return
+                
+                location = SourceLocation(
+                    file_path=file_path,
+                    start_line=max(1, node.start_point[0] + 1),
+                    end_line=max(1, node.end_point[0] + 1),
+                    start_column=max(0, node.start_point[1]),
+                    end_column=max(0, node.end_point[1]),
+                    start_byte=node.start_byte,
+                    end_byte=node.end_byte
+                )
+                
+                ast_node = ASTNode(
+                    node_id=node_id,
+                    node_type=node.type or "unknown",
+                    language=self.language,
+                    location=location,
+                    text=node_text,
+                    parent_id=parent_id,
+                    children_ids=[],  # Will be filled in later
+                    is_named=getattr(node, 'is_named', False),
+                    is_error=node.type == "ERROR" or getattr(node, 'is_missing', False)
+                )
+                
+                ast_nodes.append(ast_node)
+                node_count += 1
+                
+                # Extract children with depth tracking
+                if len(node.children) > 0 and node_count < max_nodes:
+                    # Limit children per node to prevent memory explosion
+                    children_to_process = node.children[:20]  # Max 20 children per node
+                    for child in children_to_process:
+                        extract_node(child, node_id, depth + 1)
+                        
+            except Exception as e:
+                logger.warning(f"Failed to extract AST node at {node.start_byte}: {e}")
+                # Continue processing other nodes instead of failing completely
         
-        # Start extraction from root
-        if tree.root_node:
-            extract_node(tree.root_node)
+        # Start extraction from root with error handling
+        try:
+            if tree.root_node:
+                extract_node(tree.root_node)
+        except Exception as e:
+            logger.error(f"AST extraction failed: {e}")
+            return []  # Return empty list instead of crashing
         
-        # Fill in children_ids
-        node_map = {node.node_id: node for node in ast_nodes}
-        for node in ast_nodes:
-            if node.parent_id and node.parent_id in node_map:
-                parent = node_map[node.parent_id]
-                parent.children_ids.append(node.node_id)
+        # Fill in children_ids with error handling
+        try:
+            node_map = {node.node_id: node for node in ast_nodes}
+            for node in ast_nodes:
+                if node.parent_id and node.parent_id in node_map:
+                    parent = node_map[node.parent_id]
+                    parent.children_ids.append(node.node_id)
+        except Exception as e:
+            logger.warning(f"Failed to build parent-child relationships: {e}")
         
+        logger.debug(f"Extracted {len(ast_nodes)} AST nodes (limit: {max_nodes})")
         return ast_nodes
     
     def walk_tree(self, tree: tree_sitter.Tree) -> Iterator[tree_sitter.Node]:
@@ -446,3 +509,159 @@ class TreeSitterBase(BaseParser, ABC):
             List of matching child nodes
         """
         return [child for child in node.children if child.type == child_type]
+    
+    def _safe_extract_text(
+        self, 
+        node: tree_sitter.Node, 
+        content: str, 
+        max_length: int = 50
+    ) -> str:
+        """
+        Safely extract text from a Tree-sitter node with bounds checking.
+        
+        Args:
+            node: Tree-sitter node
+            content: Source code content
+            max_length: Maximum text length to extract
+            
+        Returns:
+            Safely extracted text
+        """
+        try:
+            # Validate bounds
+            if not self._validate_node_bounds(node, content):
+                return "<invalid_bounds>"
+            
+            # Extract text with Unicode handling
+            node_text = self.get_node_text(node, content)
+            
+            # Truncate if too long
+            if len(node_text) > max_length:
+                node_text = node_text[:max_length] + "..."
+            
+            # Replace problematic characters
+            node_text = node_text.replace('\x00', '<null>').replace('\r\n', '\\n').replace('\n', '\\n')
+            
+            return node_text or "<empty>"
+            
+        except Exception as e:
+            logger.warning(f"Text extraction failed for node at {getattr(node, 'start_byte', '?')}: {e}")
+            return f"<extraction_error: {e}>"
+    
+    def _validate_node_bounds(self, node: tree_sitter.Node, content: str) -> bool:
+        """
+        Validate that node bounds are within content limits.
+        
+        Args:
+            node: Tree-sitter node
+            content: Source code content
+            
+        Returns:
+            True if bounds are valid
+        """
+        try:
+            content_bytes = content.encode('utf-8')
+            return (
+                hasattr(node, 'start_byte') and
+                hasattr(node, 'end_byte') and
+                node.start_byte >= 0 and
+                node.end_byte >= node.start_byte and
+                node.end_byte <= len(content_bytes)
+            )
+        except Exception:
+            return False
+    
+    def _classify_error_severity(self, node: tree_sitter.Node, error_text: str) -> str:
+        """
+        Classify syntax error severity based on context.
+        
+        Args:
+            node: Error node
+            error_text: Error text content
+            
+        Returns:
+            Severity level: 'critical', 'high', 'medium', 'low'
+        """
+        # Critical errors that prevent parsing
+        if node.type == "ERROR" and not error_text.strip():
+            return "critical"
+        
+        # High severity for structural errors
+        if node.parent and node.parent.type in ["program", "source_file", "module"]:
+            return "high"
+        
+        # Medium severity for statement-level errors
+        if error_text and any(keyword in error_text.lower() for keyword in 
+                            ["function", "class", "def", "struct", "interface"]):
+            return "medium"
+        
+        # Low severity for minor syntax issues
+        return "low"
+    
+    def _generate_error_message(self, node: tree_sitter.Node, error_text: str) -> str:
+        """
+        Generate descriptive error message based on node context.
+        
+        Args:
+            node: Error node
+            error_text: Error text content
+            
+        Returns:
+            Descriptive error message
+        """
+        if node.type == "ERROR":
+            if not error_text.strip():
+                return "Unexpected empty syntax error"
+            return f"Syntax error in {self.language}: '{error_text}'"
+        
+        if node.is_missing:
+            parent_type = node.parent.type if node.parent else "unknown"
+            return f"Missing {node.type} in {parent_type} context"
+        
+        return f"Parse error: {error_text}"
+    
+    def _infer_expected_type(self, node: tree_sitter.Node) -> Optional[str]:
+        """
+        Infer expected node type based on context.
+        
+        Args:
+            node: Error node
+            
+        Returns:
+            Expected node type or None
+        """
+        if not node.parent:
+            return None
+        
+        parent_type = node.parent.type
+        
+        # Language-agnostic patterns
+        expected_patterns = {
+            "function_definition": "identifier",
+            "class_definition": "identifier", 
+            "method_definition": "identifier",
+            "parameter_list": "parameter",
+            "argument_list": "argument",
+            "block": "statement",
+            "expression_statement": "expression"
+        }
+        
+        return expected_patterns.get(parent_type)
+    
+    def _safe_encode_content(self, content: str) -> bytes:
+        """
+        Safely encode content for Tree-sitter parsing with fallback handling.
+        
+        Args:
+            content: Source code content
+            
+        Returns:
+            Encoded content bytes
+        """
+        try:
+            return content.encode('utf-8')
+        except UnicodeEncodeError as e:
+            logger.warning(f"UTF-8 encoding failed: {e}, using fallback")
+            # Replace problematic characters and retry
+            content_clean = content.encode('utf-8', errors='replace').decode('utf-8')
+            return content_clean.encode('utf-8')

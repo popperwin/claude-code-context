@@ -245,6 +245,9 @@ class BaseParser(ParserProtocol):
     # Parser configuration
     MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
     PARSE_TIMEOUT = 30.0  # 30 seconds
+    MAX_MEMORY_INCREASE = 100 * 1024 * 1024  # 100MB
+    MAX_AST_NODES = 1000  # Maximum AST nodes to extract
+    MAX_SYNTAX_ERRORS = 50  # Maximum syntax errors to report
     
     def __init__(self, language: str):
         self.language = language
@@ -264,32 +267,92 @@ class BaseParser(ParserProtocol):
     
     def _read_file_safe(self, file_path: Path) -> Tuple[str, str, int]:
         """
-        Safely read file with encoding detection.
+        Safely read file with enhanced encoding detection and error recovery.
         
         Returns:
             (content, file_hash, file_size)
         """
         import hashlib
         
-        # Try different encodings
-        encodings = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']
+        # Check file size before reading
+        try:
+            file_size_bytes = file_path.stat().st_size
+            if file_size_bytes > self.MAX_FILE_SIZE:
+                raise ValueError(f"File too large: {file_size_bytes} bytes")
+        except OSError as e:
+            raise ValueError(f"Cannot read file stats: {e}")
         
-        for encoding in encodings:
+        # Try different encodings with enhanced detection
+        encodings_to_try = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252', 'iso-8859-1']
+        
+        # First try to detect encoding using chardet if available
+        try:
+            import chardet
+            raw_sample = file_path.read_bytes()[:8192]  # Read first 8KB for detection
+            detected = chardet.detect(raw_sample)
+            if detected['encoding'] and detected['confidence'] > 0.7:
+                detected_encoding = detected['encoding'].lower()
+                if detected_encoding not in [e.lower() for e in encodings_to_try]:
+                    encodings_to_try.insert(0, detected_encoding)
+        except ImportError:
+            pass  # chardet not available, continue with default encodings
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Encoding detection failed: {e}")
+        
+        last_error = None
+        for encoding in encodings_to_try:
             try:
                 content = file_path.read_text(encoding=encoding)
+                
+                # Validate content doesn't contain too many replacement characters
+                replacement_ratio = content.count('\ufffd') / max(len(content), 1)
+                if replacement_ratio > 0.1:  # More than 10% replacement chars
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"High replacement character ratio with {encoding}: {replacement_ratio:.2%}")
+                    continue
+                
                 file_size = len(content.encode('utf-8'))
                 file_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()[:16]
+                
                 return content, file_hash, file_size
-            except UnicodeDecodeError:
+                
+            except UnicodeDecodeError as e:
+                last_error = e
                 continue
+            except MemoryError as e:
+                raise ValueError(f"File too large to read into memory: {e}")
         
-        # Fallback: read as binary and replace errors
-        raw_content = file_path.read_bytes()
-        content = raw_content.decode('utf-8', errors='replace')
-        file_size = len(raw_content)
-        file_hash = hashlib.sha256(raw_content).hexdigest()[:16]
+        # Fallback: read as binary and replace errors with detailed logging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"All encoding attempts failed for {file_path}, using binary fallback. Last error: {last_error}")
         
-        return content, file_hash, file_size
+        try:
+            raw_content = file_path.read_bytes()
+            
+            # Limit content size to prevent memory issues
+            if len(raw_content) > self.MAX_FILE_SIZE:
+                logger.warning(f"Truncating large file {file_path}: {len(raw_content)} bytes")
+                raw_content = raw_content[:self.MAX_FILE_SIZE]
+            
+            content = raw_content.decode('utf-8', errors='replace')
+            file_size = len(raw_content)
+            file_hash = hashlib.sha256(raw_content).hexdigest()[:16]
+            
+            # Count replacement characters for quality assessment
+            replacement_count = content.count('\ufffd')
+            if replacement_count > 0:
+                logger.warning(f"File contains {replacement_count} replacement characters due to encoding issues")
+            
+            return content, file_hash, file_size
+            
+        except MemoryError as e:
+            raise ValueError(f"File too large to read: {e}")
+        except Exception as e:
+            raise ValueError(f"Failed to read file as binary: {e}")
     
     def _create_error_result(
         self,
