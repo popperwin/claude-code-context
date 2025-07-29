@@ -1,5 +1,4 @@
 #!/bin/bash
-# Simple comprehensive testing for Sprint 1 + Sprint 2
 set -euo pipefail
 
 # Colors for output
@@ -14,7 +13,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 TEST_ENV_DIR="$SCRIPT_DIR/test-env"
 
 echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}Sprint 1 + Sprint 2 Comprehensive Testing${NC}"
+echo -e "${BLUE}Comprehensive Testing${NC}"
 echo -e "${BLUE}========================================${NC}"
 
 # Check if test environment is set up
@@ -37,15 +36,13 @@ echo -e "\n${BLUE}Running all tests with coverage analysis...${NC}"
 echo "Command: pytest tests/ -v --cov=core --cov=config --cov-report=term-missing --cov-report=html --cov-fail-under=65"
 
 if pytest tests/ -v --cov=core --cov=config --cov-report=term-missing --cov-report=html --cov-fail-under=65; then
-    echo -e "\n${GREEN}🎉 ALL TESTS PASSED! Sprint 1 + Sprint 2 Complete!${NC}"
+    echo -e "\n${GREEN}🎉 ALL TESTS PASSED! ${NC}"
     echo -e "${GREEN}✅ Coverage requirement (65%) met${NC}"
     echo -e "${GREEN}✅ All 212 tests passing${NC}"
     echo -e "${GREEN}📊 Coverage report: htmlcov/index.html${NC}"
-    echo -e "\n${GREEN}Ready to proceed to Sprint 3 (Tree-sitter Parsers)${NC}"
     exit 0
 else
     echo -e "\n${RED}❌ Tests failed or coverage below 65%${NC}"
     echo -e "${RED}📊 Check coverage report: htmlcov/index.html${NC}"
-    echo -e "${RED}Issues must be resolved before Sprint 3${NC}"
     exit 1
 fi
