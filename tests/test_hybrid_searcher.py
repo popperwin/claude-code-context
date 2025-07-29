@@ -9,7 +9,7 @@ import asyncio
 from unittest.mock import Mock, AsyncMock, patch
 from typing import List
 
-from core.storage.search import HybridSearcher, SearchConfig, SearchMode
+from core.search import HybridSearcher, SearchConfig, SearchMode
 from core.storage.client import HybridQdrantClient
 from core.models.storage import SearchResult, QdrantPoint
 

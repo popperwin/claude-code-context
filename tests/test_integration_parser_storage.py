@@ -20,8 +20,9 @@ from core.parser.registry import parser_registry
 # Sprint 2 - Storage and embedding components
 from core.storage import (
     HybridQdrantClient, CollectionManager, CollectionType, 
-    BatchIndexer, SearchMode, HybridSearcher
+    BatchIndexer
 )
+from core.search import SearchMode, HybridSearcher
 from core.embeddings import (
     StellaEmbedder, EmbeddingCache, get_default_cache,
     EmbeddingRequest, EmbeddingResponse

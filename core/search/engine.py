@@ -9,7 +9,7 @@ from typing import List, Dict, Any, Optional, Union, Tuple
 from enum import Enum
 from dataclasses import dataclass
 
-from .client import HybridQdrantClient, SearchMode
+from ..storage.client import HybridQdrantClient, SearchMode
 from ..models.storage import SearchResult
 
 logger = logging.getLogger(__name__)

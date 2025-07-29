@@ -6,7 +6,6 @@ Provides Qdrant integration, collection management, and hybrid search capabiliti
 
 from .client import HybridQdrantClient
 from .schemas import CollectionManager, CollectionType, QdrantSchema, CollectionConfig, DistanceMetric
-from .search import SearchMode, HybridSearcher, SearchConfig
 from .indexing import BatchIndexer, IndexingProgress, IndexingResult
 
 __all__ = [
@@ -16,9 +15,6 @@ __all__ = [
     "CollectionConfig",
     "DistanceMetric",
     "QdrantSchema",
-    "SearchMode",
-    "SearchConfig",
-    "HybridSearcher",
     "BatchIndexer",
     "IndexingProgress",
     "IndexingResult"
