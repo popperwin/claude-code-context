@@ -5,9 +5,12 @@ Provides intelligent search capabilities with query optimization and result rank
 """
 
 from .engine import HybridSearcher, SearchConfig, SearchMode
+from .query_analyzer import QueryAnalyzer, QueryAnalysis
 
 __all__ = [
     "HybridSearcher",
     "SearchConfig", 
-    "SearchMode"
+    "SearchMode",
+    "QueryAnalyzer",
+    "QueryAnalysis"
 ]

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from ..storage.client import HybridQdrantClient, SearchMode
 from ..models.storage import SearchResult
+from .query_analyzer import QueryAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -73,15 +74,7 @@ class HybridSearcher:
             client: Hybrid Qdrant client
         """
         self.client = client
-        
-        # Query analysis patterns
-        self._code_patterns = [
-            "def ", "class ", "function", "method", "import", 
-            "variable", "constant", "async ", "await "
-        ]
-        self._exact_patterns = [
-            "\"", "'", "exact:", "name:", "file:"
-        ]
+        self.query_analyzer = QueryAnalyzer()
         
         logger.info("Initialized HybridSearcher")
     
@@ -106,7 +99,12 @@ class HybridSearcher:
             config = SearchConfig()
         
         # Analyze query and optimize search mode
-        optimized_mode = self._optimize_search_mode(query, config.mode)
+        if config.mode == SearchMode.AUTO:
+            analysis = self.query_analyzer.analyze_query(query)
+            optimized_mode = analysis.recommended_mode
+            logger.debug(f"Query analysis: {analysis.detected_patterns} -> {optimized_mode}")
+        else:
+            optimized_mode = config.mode
         
         # Build filters from config
         filters = self._build_filters(config)
@@ -142,42 +140,6 @@ class HybridSearcher:
         
         return results
     
-    def _optimize_search_mode(self, query: str, requested_mode: str) -> str:
-        """
-        Analyze query and optimize search mode.
-        
-        Args:
-            query: Search query
-            requested_mode: Originally requested mode
-            
-        Returns:
-            Optimized search mode
-        """
-        if requested_mode != SearchMode.AUTO:
-            return requested_mode
-        
-        query_lower = query.lower()
-        
-        # Check for exact match indicators
-        if any(pattern in query for pattern in self._exact_patterns):
-            return SearchMode.PAYLOAD_ONLY
-        
-        # Check for code-specific terms
-        if any(pattern in query_lower for pattern in self._code_patterns):
-            # Code-specific queries work well with hybrid
-            return SearchMode.HYBRID
-        
-        # Short queries (1-2 words) work better with payload search
-        words = query.split()
-        if len(words) <= 2:
-            return SearchMode.PAYLOAD_ONLY
-        
-        # Longer descriptive queries work well with semantic search
-        if len(words) > 5:
-            return SearchMode.SEMANTIC_ONLY
-        
-        # Default to hybrid for balanced results
-        return SearchMode.HYBRID
     
     def _build_filters(self, config: SearchConfig) -> Dict[str, Any]:
         """Build filters from search configuration"""
@@ -424,33 +386,4 @@ class HybridSearcher:
         Returns:
             List of suggested completions
         """
-        suggestions = []
-        
-        # Add common code entity prefixes
-        if partial_query:
-            lower_query = partial_query.lower()
-            
-            # Function/method suggestions
-            if any(prefix in lower_query for prefix in ["def", "func", "method"]):
-                suggestions.extend([
-                    f"{partial_query} async",
-                    f"{partial_query} test",
-                    f"{partial_query} private"
-                ])
-            
-            # Class suggestions
-            if "class" in lower_query:
-                suggestions.extend([
-                    f"{partial_query} abstract",
-                    f"{partial_query} interface",
-                    f"{partial_query} base"
-                ])
-            
-            # File type suggestions
-            if "file:" in lower_query or "." in partial_query:
-                extensions = [".py", ".js", ".ts", ".go", ".rs", ".java"]
-                for ext in extensions:
-                    if not partial_query.endswith(ext):
-                        suggestions.append(f"{partial_query}{ext}")
-        
-        return suggestions[:10]  # Limit to 10 suggestions
+        return self.query_analyzer.get_query_suggestions(partial_query)
