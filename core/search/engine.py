@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from ..storage.client import HybridQdrantClient, SearchMode
 from ..models.storage import SearchResult
 from .query_analyzer import QueryAnalyzer
+from .ranking import ResultRanker, RankingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -66,15 +67,17 @@ class HybridSearcher:
     - Performance optimization
     """
     
-    def __init__(self, client: HybridQdrantClient):
+    def __init__(self, client: HybridQdrantClient, ranking_config: Optional[RankingConfig] = None):
         """
         Initialize hybrid searcher.
         
         Args:
             client: Hybrid Qdrant client
+            ranking_config: Configuration for result ranking
         """
         self.client = client
         self.query_analyzer = QueryAnalyzer()
+        self.ranker = ResultRanker(ranking_config)
         
         logger.info("Initialized HybridSearcher")
     
@@ -133,12 +136,15 @@ class HybridSearcher:
         # Apply post-processing
         results = self._post_process_results(results, config)
         
+        # Apply advanced ranking
+        ranked_results = self.ranker.rank_results(results, query)
+        
         logger.debug(
-            f"Search completed: {len(results)} results for query '{query}' "
+            f"Search completed: {len(ranked_results)} results for query '{query}' "
             f"in mode '{optimized_mode}'"
         )
         
-        return results
+        return ranked_results
     
     
     def _build_filters(self, config: SearchConfig) -> Dict[str, Any]:
@@ -231,29 +237,7 @@ class HybridSearcher:
             
             processed_results.append(result)
         
-        # Re-rank results if needed
-        processed_results = self._rerank_results(processed_results)
-        
         return processed_results
-    
-    def _rerank_results(self, results: List[SearchResult]) -> List[SearchResult]:
-        """
-        Advanced re-ranking of search results.
-        
-        Args:
-            results: Search results to re-rank
-            
-        Returns:
-            Re-ranked results
-        """
-        # For now, keep original ranking
-        # Future enhancements could include:
-        # - Boost results from recent files
-        # - Boost results with better documentation
-        # - Boost results from main source directories
-        # - Apply machine learning ranking models
-        
-        return results
     
     async def search_similar(
         self,
@@ -387,3 +371,26 @@ class HybridSearcher:
             List of suggested completions
         """
         return self.query_analyzer.get_query_suggestions(partial_query)
+    
+    def fuse_search_results(
+        self,
+        payload_results: List[SearchResult],
+        semantic_results: List[SearchResult],
+        payload_weight: float = 0.7,
+        semantic_weight: float = 0.3
+    ) -> List[SearchResult]:
+        """
+        Fuse payload and semantic search results.
+        
+        Args:
+            payload_results: Results from payload search
+            semantic_results: Results from semantic search
+            payload_weight: Weight for payload results
+            semantic_weight: Weight for semantic results
+            
+        Returns:
+            Fused and ranked results
+        """
+        return self.ranker.fuse_search_results(
+            payload_results, semantic_results, payload_weight, semantic_weight
+        )

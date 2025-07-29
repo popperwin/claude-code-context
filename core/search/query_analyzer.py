@@ -8,6 +8,8 @@ import logging
 from typing import List, Optional
 from dataclasses import dataclass
 
+from .suggestions import QuerySuggestionEngine
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +39,8 @@ class QueryAnalyzer:
     
     def __init__(self):
         """Initialize query analyzer with pattern definitions"""
+        
+        self.suggestion_engine = QuerySuggestionEngine()
         
         # Code-specific patterns that suggest hybrid search works well
         self._code_patterns = [
@@ -217,7 +221,7 @@ class QueryAnalyzer:
     
     def get_query_suggestions(self, partial_query: str) -> List[str]:
         """
-        Generate query completion suggestions.
+        Generate query completion suggestions using advanced suggestion engine.
         
         Args:
             partial_query: Partial query string
@@ -225,50 +229,14 @@ class QueryAnalyzer:
         Returns:
             List of suggested query completions
         """
-        suggestions = []
-        
         if not partial_query:
-            return suggestions
+            return []
         
-        lower_query = partial_query.lower()
+        # Use the advanced suggestion engine
+        suggestions = self.suggestion_engine.get_suggestions(partial_query, limit=10)
         
-        # Function/method suggestions
-        if any(prefix in lower_query for prefix in ["def", "func", "method"]):
-            suggestions.extend([
-                f"{partial_query} async",
-                f"{partial_query} test",
-                f"{partial_query} private",
-                f"{partial_query} static",
-                f"{partial_query} public"
-            ])
-        
-        # Class suggestions
-        if "class" in lower_query:
-            suggestions.extend([
-                f"{partial_query} abstract",
-                f"{partial_query} interface",
-                f"{partial_query} base",
-                f"{partial_query} mixin",
-                f"{partial_query} factory"
-            ])
-        
-        # File type suggestions
-        if "file:" in lower_query or "." in partial_query:
-            extensions = [".py", ".js", ".ts", ".go", ".rs", ".java", ".cpp", ".h"]
-            for ext in extensions:
-                if not partial_query.endswith(ext):
-                    suggestions.append(f"{partial_query}{ext}")
-        
-        # Semantic query starters
-        if any(starter in lower_query for starter in ["find", "show", "get"]):
-            suggestions.extend([
-                f"{partial_query} that handles",
-                f"{partial_query} similar to",
-                f"{partial_query} in file",
-                f"{partial_query} with pattern"
-            ])
-        
-        return suggestions[:10]  # Limit to top 10 suggestions
+        # Extract just the text from SearchSuggestion objects
+        return [suggestion.text for suggestion in suggestions]
     
     def explain_mode_choice(self, analysis: QueryAnalysis) -> str:
         """
