@@ -25,6 +25,24 @@ Example:
 from .base import ParserProtocol, ParseResult
 from .registry import ParserRegistry, parser_registry
 
+# Import all parsers to ensure they register themselves
+try:
+    from . import python_parser
+    from . import javascript_parser
+    from . import go_parser
+    from . import rust_parser
+    from . import java_parser
+    from . import c_parser
+    from . import cpp_parser
+    from . import html_parser
+    from . import css_parser
+    from . import json_parser
+    from . import yaml_parser
+except ImportError as e:
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Failed to import some parsers: {e}")
+
 __all__ = [
     "ParserProtocol",
     "ParseResult", 
