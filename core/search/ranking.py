@@ -109,6 +109,7 @@ class ResultRanker:
         # Apply file-based limiting
         limited_results = self._apply_file_limiting(diverse_results)
         
+        
         logger.debug(
             f"Ranked {len(results)} results -> {len(limited_results)} final results "
             f"using {self.config.strategy.value}"
@@ -128,19 +129,30 @@ class ResultRanker:
         """Rank results with freshness boost"""
         file_timestamps = context.get("file_timestamps", {})
         
-        def freshness_score(result: SearchResult) -> float:
+        scored_results = []
+        for result in results:
             base_score = result.score
             file_path = result.point.payload.get("file_path", "")
             
             if file_path in file_timestamps:
-                # Boost recently modified files
-                # This would need actual timestamp calculation
-                freshness_boost = self.config.freshness_weight * 0.1  # Placeholder
-                return base_score + freshness_boost
+                # Boost recently modified files more significantly
+                freshness_boost = self.config.freshness_weight * 0.3
+                new_score = base_score * (1.0 + freshness_boost)
+            else:
+                new_score = base_score
             
-            return base_score
+            # Create new result with updated score
+            new_result = SearchResult(
+                point=result.point,
+                score=new_score,
+                query=result.query,
+                search_type=result.search_type,
+                rank=result.rank,
+                total_results=result.total_results
+            )
+            scored_results.append(new_result)
         
-        return sorted(results, key=freshness_score, reverse=True)
+        return sorted(scored_results, key=lambda r: r.score, reverse=True)
     
     def _rank_with_popularity_boost(
         self,
@@ -151,22 +163,34 @@ class ResultRanker:
         popular_entities = context.get("popular_entities", set())
         popular_files = context.get("popular_files", set())
         
-        def popularity_score(result: SearchResult) -> float:
+        scored_results = []
+        for result in results:
             base_score = result.score
-            boost = 0.0
+            boost_multiplier = 1.0
             
             entity_id = result.point.payload.get("entity_id", "")
             file_path = result.point.payload.get("file_path", "")
             
             if entity_id in popular_entities:
-                boost += self.config.popularity_weight * 0.2
+                boost_multiplier += self.config.popularity_weight * 0.5
             
             if file_path in popular_files:
-                boost += self.config.popularity_weight * 0.1
+                boost_multiplier += self.config.popularity_weight * 0.3
             
-            return base_score + boost
+            new_score = base_score * boost_multiplier
+            
+            # Create new result with updated score
+            new_result = SearchResult(
+                point=result.point,
+                score=new_score,
+                query=result.query,
+                search_type=result.search_type,
+                rank=result.rank,
+                total_results=result.total_results
+            )
+            scored_results.append(new_result)
         
-        return sorted(results, key=popularity_score, reverse=True)
+        return sorted(scored_results, key=lambda r: r.score, reverse=True)
     
     def _rank_with_quality_boost(
         self,
@@ -174,28 +198,62 @@ class ResultRanker:
         context: Dict[str, Any]
     ) -> List[SearchResult]:
         """Rank results with code quality signals"""
-        def quality_score(result: SearchResult) -> float:
+        scored_results = []
+        
+        for result in results:
             base_score = result.score
-            boost = 0.0
+            quality_multiplier = 1.0
             
-            # Boost well-documented entities
+            # Progressive boost for documentation quality
             docstring = result.point.payload.get("docstring", "")
-            if docstring and len(docstring) > 50:
-                boost += self.config.quality_weight * 0.1
+            if docstring:
+                doc_length = len(docstring)
+                if doc_length > 200:
+                    # Excellent documentation
+                    quality_multiplier += self.config.quality_weight * 0.8
+                elif doc_length > 100:
+                    # Good documentation
+                    quality_multiplier += self.config.quality_weight * 0.5
+                elif doc_length > 50:
+                    # Basic documentation
+                    quality_multiplier += self.config.quality_weight * 0.3
+                elif doc_length > 20:
+                    # Minimal documentation
+                    quality_multiplier += self.config.quality_weight * 0.1
+                # No boost for very short or no documentation
             
-            # Boost entities with type hints
+            # Significant boost for type hints
             signature = result.point.payload.get("signature", "")
-            if "->" in signature or ":" in signature:  # Type hints present
-                boost += self.config.quality_weight * 0.05
+            if signature:
+                # Count type hint indicators
+                type_hint_score = 0
+                if "->" in signature:  # Return type hint
+                    type_hint_score += 0.3
+                if signature.count(":") > 0:  # Parameter type hints
+                    type_hint_score += 0.2 * min(signature.count(":"), 3)  # Cap at 3
+                
+                quality_multiplier += self.config.quality_weight * type_hint_score
             
-            # Boost main source directories over tests/examples
+            # Strong boost for main source directories
             file_path = result.point.payload.get("file_path", "")
             if self.config.boost_main_directories and self._is_main_source_file(file_path):
-                boost += self.config.quality_weight * 0.1
+                quality_multiplier += self.config.quality_weight * 0.4
             
-            return base_score + boost
+            # Apply multiplier to base score
+            new_score = base_score * quality_multiplier
+            
+            # Create new result with updated score
+            new_result = SearchResult(
+                point=result.point,
+                score=new_score,
+                query=result.query,
+                search_type=result.search_type,
+                rank=result.rank,
+                total_results=result.total_results
+            )
+            scored_results.append(new_result)
         
-        return sorted(results, key=quality_score, reverse=True)
+        return sorted(scored_results, key=lambda r: r.score, reverse=True)
     
     def _rank_hybrid(
         self,
@@ -204,39 +262,74 @@ class ResultRanker:
         context: Dict[str, Any]
     ) -> List[SearchResult]:
         """Advanced hybrid ranking with multiple signals"""
-        def hybrid_score(result: SearchResult) -> float:
+        scored_results = []
+        
+        for result in results:
             base_score = result.score
-            total_boost = 0.0
+            total_multiplier = 1.0
             
             # Freshness boost
             file_path = result.point.payload.get("file_path", "")
             file_timestamps = context.get("file_timestamps", {})
             if file_path in file_timestamps:
-                total_boost += self.config.freshness_weight * 0.1
+                total_multiplier += self.config.freshness_weight * 0.3
             
             # Popularity boost
             entity_id = result.point.payload.get("entity_id", "")
             popular_entities = context.get("popular_entities", set())
             if entity_id in popular_entities:
-                total_boost += self.config.popularity_weight * 0.2
+                total_multiplier += self.config.popularity_weight * 0.5
             
-            # Quality boost
+            # Quality boost - progressive documentation scoring
             docstring = result.point.payload.get("docstring", "")
-            if docstring and len(docstring) > 50:
-                total_boost += self.config.quality_weight * 0.1
+            if docstring:
+                doc_length = len(docstring)
+                if doc_length > 200:
+                    total_multiplier += self.config.quality_weight * 0.6
+                elif doc_length > 100:
+                    total_multiplier += self.config.quality_weight * 0.4
+                elif doc_length > 50:
+                    total_multiplier += self.config.quality_weight * 0.2
+                elif doc_length > 20:
+                    total_multiplier += self.config.quality_weight * 0.1
+            
+            # Type hints boost
+            signature = result.point.payload.get("signature", "")
+            if signature and ("->" in signature or ":" in signature):
+                total_multiplier += self.config.quality_weight * 0.2
             
             # Directory importance boost
             if self.config.boost_main_directories and self._is_main_source_file(file_path):
-                total_boost += 0.05
+                total_multiplier += 0.15
             
-            # Query relevance boost
+            # Query relevance boost - exact name match gets significant boost
             entity_name = result.point.payload.get("entity_name", "")
-            if query.lower() in entity_name.lower():
-                total_boost += 0.1
+            if entity_name:
+                query_lower = query.lower()
+                name_lower = entity_name.lower()
+                
+                if query_lower == name_lower:
+                    # Exact match
+                    total_multiplier += 0.5
+                elif query_lower in name_lower:
+                    # Partial match - boost proportional to match quality
+                    match_ratio = len(query_lower) / len(name_lower)
+                    total_multiplier += 0.3 * match_ratio
             
-            return base_score + total_boost
+            new_score = base_score * total_multiplier
+            
+            # Create new result with updated score
+            new_result = SearchResult(
+                point=result.point,
+                score=new_score,
+                query=result.query,
+                search_type=result.search_type,
+                rank=result.rank,
+                total_results=result.total_results
+            )
+            scored_results.append(new_result)
         
-        return sorted(results, key=hybrid_score, reverse=True)
+        return sorted(scored_results, key=lambda r: r.score, reverse=True)
     
     def _apply_diversity_filtering(self, results: List[SearchResult]) -> List[SearchResult]:
         """Apply diversity filtering to avoid too similar results"""
