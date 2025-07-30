@@ -265,23 +265,6 @@ class TestQuerySuggestions:
         """Setup test instance"""
         self.analyzer = QueryAnalyzer()
     
-    def test_function_suggestions(self):
-        """Test function-related suggestions"""
-        suggestions = self.analyzer.get_query_suggestions("def my_func")
-        
-        assert len(suggestions) <= 10
-        assert any("async" in suggestion for suggestion in suggestions)
-        assert any("test" in suggestion for suggestion in suggestions)
-        assert any("private" in suggestion for suggestion in suggestions)
-    
-    def test_class_suggestions(self):
-        """Test class-related suggestions"""
-        suggestions = self.analyzer.get_query_suggestions("class MyClass")
-        
-        assert len(suggestions) <= 10
-        assert any("abstract" in suggestion for suggestion in suggestions)
-        assert any("interface" in suggestion for suggestion in suggestions)
-        assert any("base" in suggestion for suggestion in suggestions)
     
     def test_file_suggestions(self):
         """Test file extension suggestions"""

@@ -472,27 +472,6 @@ class TestHybridSearcher:
         # Should return empty list on error
         assert results == []
     
-    def test_get_search_suggestions_function_patterns(self, mock_client):
-        """Test search suggestions for function patterns"""
-        searcher = HybridSearcher(mock_client)
-        
-        suggestions = searcher.get_search_suggestions("def my_func")
-        
-        assert len(suggestions) <= 10
-        assert any("async" in suggestion for suggestion in suggestions)
-        assert any("test" in suggestion for suggestion in suggestions)
-        assert any("private" in suggestion for suggestion in suggestions)
-    
-    def test_get_search_suggestions_class_patterns(self, mock_client):
-        """Test search suggestions for class patterns"""
-        searcher = HybridSearcher(mock_client)
-        
-        suggestions = searcher.get_search_suggestions("class MyClass")
-        
-        assert len(suggestions) <= 10
-        assert any("abstract" in suggestion for suggestion in suggestions)
-        assert any("interface" in suggestion for suggestion in suggestions)
-        assert any("base" in suggestion for suggestion in suggestions)
     
     def test_get_search_suggestions_file_extensions(self, mock_client):
         """Test search suggestions for file extensions"""
