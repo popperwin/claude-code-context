@@ -50,6 +50,14 @@ class IndexingJobConfig:
     enable_caching: bool = True
     cache_size_mb: int = 512
     progress_callback_interval: float = 1.0  # seconds
+    
+    # Real-time synchronization options
+    enable_realtime_sync: bool = False
+    sync_debounce_ms: int = 500
+    sync_batch_size: int = 10
+    sync_worker_count: int = 2
+    sync_auto_repair: bool = True
+    sync_validation_interval_minutes: int = 5
 
 
 @dataclass 
@@ -80,6 +88,12 @@ class IndexingJobMetrics:
     # Cache metrics
     cache_hits: int = 0
     cache_misses: int = 0
+    
+    # Synchronization metrics
+    sync_time_seconds: float = 0.0
+    orphaned_entities_cleaned: int = 0
+    stale_entities_detected: int = 0
+    files_requiring_reindex: int = 0
     
     # Error tracking
     errors: List[str] = field(default_factory=list)
@@ -132,6 +146,10 @@ class IndexingJobMetrics:
             "parse_time_seconds": self.parse_time_seconds,
             "embed_time_seconds": self.embed_time_seconds,
             "index_time_seconds": self.index_time_seconds,
+            "sync_time_seconds": self.sync_time_seconds,
+            "orphaned_entities_cleaned": self.orphaned_entities_cleaned,
+            "stale_entities_detected": self.stale_entities_detected,
+            "files_requiring_reindex": self.files_requiring_reindex,
             "error_count": len(self.errors)
         }
 
@@ -154,7 +172,8 @@ class HybridIndexer:
         parser_pipeline: ProcessParsingPipeline,
         embedder: StellaEmbedder,
         storage_client: HybridQdrantClient,
-        cache_manager: Optional[CacheManager] = None
+        cache_manager: Optional[CacheManager] = None,
+        config: Optional[IndexingJobConfig] = None
     ):
         """
         Initialize hybrid indexer with required components.
@@ -164,11 +183,13 @@ class HybridIndexer:
             embedder: Stella embedding generator  
             storage_client: Qdrant storage client
             cache_manager: Optional cache manager for performance
+            config: Optional default indexing configuration
         """
         self.parser_pipeline = parser_pipeline
         self.embedder = embedder
         self.storage_client = storage_client
         self.cache_manager = cache_manager
+        self.default_config = config
         
         # Create batch indexer for storage operations
         self.batch_indexer = BatchIndexer(
@@ -184,7 +205,117 @@ class HybridIndexer:
         # Progress tracking
         self._progress_callbacks: List[Callable[[IndexingJobMetrics], None]] = []
         
+        # Real-time synchronization engine (if enabled)
+        from ..sync.engine import ProjectCollectionSyncEngine
+        self.sync_engine: Optional[ProjectCollectionSyncEngine] = None
+        
+        # Initialize synchronization if enabled in default config
+        if self.default_config and self.default_config.enable_realtime_sync:
+            self._initialize_sync_engine()
+        
         logger.info("Initialized HybridIndexer with all components")
+    
+    def _initialize_sync_engine(self) -> None:
+        """Initialize the real-time synchronization engine with default config."""
+        if not self.default_config:
+            return
+        
+        try:
+            from ..sync.engine import ProjectCollectionSyncEngine
+            
+            self.sync_engine = ProjectCollectionSyncEngine(
+                storage_client=self.storage_client,
+                max_queue_size=1000,
+                max_batch_size=self.default_config.sync_batch_size,
+                worker_count=self.default_config.sync_worker_count
+            )
+            
+            logger.info(f"Initialized synchronization engine with {self.default_config.sync_worker_count} workers")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize synchronization engine: {e}")
+            self.sync_engine = None
+    
+    async def enable_realtime_sync(
+        self,
+        project_path: Path,
+        collection_name: str,
+        config: Optional[IndexingJobConfig] = None
+    ) -> bool:
+        """
+        Enable real-time synchronization for a project.
+        
+        Args:
+            project_path: Root path of the project
+            collection_name: Name of the collection to synchronize
+            config: Optional configuration for sync settings
+            
+        Returns:
+            True if synchronization was enabled successfully
+        """
+        if not config:
+            config = self.default_config
+            
+        if not config or not config.enable_realtime_sync:
+            logger.warning("Real-time synchronization is not enabled in configuration")
+            return False
+        
+        try:
+            # Initialize sync engine if not already done
+            if not self.sync_engine:
+                self._initialize_sync_engine()
+            
+            if not self.sync_engine:
+                raise Exception("Failed to initialize synchronization engine")
+            
+            # Start the sync engine if not running
+            if not self.sync_engine.is_running:
+                success = await self.sync_engine.start_monitoring()
+                if not success:
+                    raise Exception("Failed to start synchronization engine")
+            
+            # Add this project to synchronization
+            success = await self.sync_engine.add_project(
+                project_path=project_path,
+                collection_name=collection_name,
+                debounce_ms=config.sync_debounce_ms,
+                start_monitoring=True
+            )
+            
+            if success:
+                logger.info(f"Enabled real-time synchronization for {project_path}")
+            else:
+                logger.error(f"Failed to add project {project_path} to synchronization")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error enabling real-time synchronization: {e}")
+            return False
+    
+    async def disable_realtime_sync(self, project_path: Path) -> bool:
+        """
+        Disable real-time synchronization for a project.
+        
+        Args:
+            project_path: Root path of the project
+            
+        Returns:
+            True if synchronization was disabled successfully
+        """
+        if not self.sync_engine:
+            return True  # Already disabled
+        
+        try:
+            success = await self.sync_engine.remove_project(project_path)
+            if success:
+                logger.info(f"Disabled real-time synchronization for {project_path}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error disabling real-time synchronization: {e}")
+            return False
     
     async def _ensure_collection_exists(
         self,
@@ -308,6 +439,18 @@ class HybridIndexer:
                 await self._index_relations(
                     relations, collection_name, metrics
                 )
+            
+            # Phase 7: Enable Real-time Synchronization (if configured)
+            if config.enable_realtime_sync:
+                sync_success = await self.enable_realtime_sync(
+                    project_path=config.project_path,
+                    collection_name=collection_name,
+                    config=config
+                )
+                if sync_success:
+                    logger.info(f"Real-time synchronization enabled for {config.project_path}")
+                else:
+                    logger.warning(f"Failed to enable real-time synchronization for {config.project_path}")
             
             # Update cache state
             if config.enable_caching and self.cache_manager:
@@ -592,6 +735,42 @@ class HybridIndexer:
         
         return await self.index_project(config, show_progress=False)
     
+    def get_sync_status(self) -> Dict[str, Any]:
+        """
+        Get comprehensive synchronization status.
+        
+        Returns:
+            Dictionary with synchronization status information
+        """
+        if not self.sync_engine:
+            return {
+                "sync_enabled": False,
+                "sync_engine_initialized": False
+            }
+        
+        status = self.sync_engine.get_status()
+        status["sync_enabled"] = True
+        status["sync_engine_initialized"] = True
+        
+        return status
+    
+    async def shutdown(self) -> None:
+        """
+        Gracefully shutdown the indexer and all associated components.
+        """
+        logger.info("Shutting down HybridIndexer")
+        
+        try:
+            # Stop synchronization engine if running
+            if self.sync_engine:
+                await self.sync_engine.stop_monitoring()
+                logger.info("Stopped synchronization engine")
+        
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+        
+        logger.info("HybridIndexer shutdown complete")
+    
     def get_performance_metrics(self) -> Dict[str, Any]:
         """Get overall performance metrics from all components"""
         metrics = {
@@ -609,5 +788,9 @@ class HybridIndexer:
         
         if self.cache_manager:
             metrics["cache_manager"] = self.cache_manager.get_stats()
+        
+        # Add synchronization metrics if available
+        if self.sync_engine:
+            metrics["sync_engine"] = self.sync_engine.get_status()
         
         return metrics

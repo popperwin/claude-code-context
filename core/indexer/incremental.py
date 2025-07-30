@@ -10,11 +10,15 @@ import hashlib
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Any
+from typing import Dict, List, Optional, Set, Any, TYPE_CHECKING
 from dataclasses import dataclass, asdict
 import aiofiles
+
+if TYPE_CHECKING:
+    from ..storage.client import HybridQdrantClient
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +345,285 @@ class IncrementalIndexer:
         )
         
         return changed_files
+    
+    async def cleanup_deleted_files(
+        self,
+        deleted_files: List[str],
+        collection_name: str,
+        storage_client: Optional['HybridQdrantClient'] = None
+    ) -> Dict[str, int]:
+        """
+        Clean up entities for deleted files from the collection.
+        
+        Args:
+            deleted_files: List of deleted file paths
+            collection_name: Target collection name
+            storage_client: HybridQdrantClient for deletion operations
+            
+        Returns:
+            Dictionary with deletion statistics per file
+        """
+        deletion_stats = {}
+        
+        if not deleted_files or not storage_client:
+            logger.debug("No files to clean up or no storage client provided")
+            return deletion_stats
+        
+        logger.info(f"Cleaning up entities for {len(deleted_files)} deleted files")
+        
+        for file_path in deleted_files:
+            try:
+                # Delete entities for this file
+                deletion_result = await storage_client.delete_points_by_file_path(
+                    collection_name, file_path
+                )
+                
+                if deletion_result.success:
+                    deleted_count = deletion_result.affected_count
+                    deletion_stats[file_path] = deleted_count
+                    
+                    logger.info(
+                        f"Deleted {deleted_count} entities for file: {file_path}"
+                    )
+                else:
+                    deletion_stats[file_path] = 0
+                    logger.warning(
+                        f"Failed to delete entities for file {file_path}: "
+                        f"{deletion_result.error}"
+                    )
+                
+            except Exception as e:
+                deletion_stats[file_path] = 0
+                logger.error(f"Error cleaning up file {file_path}: {e}")
+        
+        total_deleted = sum(deletion_stats.values())
+        logger.info(
+            f"Cleanup completed: {total_deleted} entities deleted "
+            f"from {len([f for f, c in deletion_stats.items() if c > 0])} files"
+        )
+        
+        return deletion_stats
+    
+    async def synchronize_collection(
+        self,
+        current_files: List[Path],
+        collection_name: str,
+        storage_client: Optional['HybridQdrantClient'] = None,
+        force_full_sync: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Synchronize Qdrant collection with current file state.
+        
+        This method ensures collection consistency by:
+        1. Identifying orphaned entities (from deleted files)
+        2. Detecting stale entities (from modified files)  
+        3. Cleaning up inconsistent data
+        
+        Args:
+            current_files: List of current files in the project
+            collection_name: Target collection name
+            storage_client: HybridQdrantClient for operations
+            force_full_sync: Force complete resync ignoring incremental state
+            
+        Returns:
+            Dictionary with synchronization statistics
+        """
+        sync_stats = {
+            "total_files_checked": 0,
+            "orphaned_entities_found": 0,
+            "orphaned_entities_cleaned": 0,
+            "stale_entities_found": 0,
+            "stale_entities_cleaned": 0,
+            "files_requiring_reindex": [],
+            "sync_duration_seconds": 0.0,
+            "errors": []
+        }
+        
+        if not storage_client:
+            sync_stats["errors"].append("No storage client provided for synchronization")
+            return sync_stats
+        
+        start_time = time.time()
+        logger.info(f"Starting collection synchronization for {collection_name}")
+        
+        try:
+            # Load current incremental state
+            current_state = await self._load_collection_state(collection_name)
+            current_file_set = {str(f) for f in current_files}
+            sync_stats["total_files_checked"] = len(current_files)
+            
+            # Phase 1: Find and clean orphaned entities (from deleted files)
+            orphan_stats = await self._find_and_clean_orphaned_entities(
+                current_file_set, current_state, collection_name, storage_client
+            )
+            sync_stats.update(orphan_stats)
+            
+            # Phase 2: Detect stale entities (from modified files)
+            staleness_stats = await self._detect_and_mark_stale_entities(
+                current_files, current_state, collection_name, storage_client, force_full_sync
+            )
+            sync_stats.update(staleness_stats)
+            
+            # Phase 3: Update incremental state to reflect cleanup
+            if orphan_stats.get("files_cleaned", []):
+                await self._save_collection_state(collection_name, current_state)
+            
+        except Exception as e:
+            error_msg = f"Collection synchronization failed: {e}"
+            sync_stats["errors"].append(error_msg)
+            logger.error(error_msg, exc_info=True)
+        
+        sync_stats["sync_duration_seconds"] = time.time() - start_time
+        
+        logger.info(
+            f"Collection synchronization completed: "
+            f"{sync_stats['orphaned_entities_cleaned']} orphaned entities cleaned, "
+            f"{sync_stats['stale_entities_found']} stale entities detected, "
+            f"{len(sync_stats['files_requiring_reindex'])} files need reindexing "
+            f"in {sync_stats['sync_duration_seconds']:.2f}s"
+        )
+        
+        return sync_stats
+    
+    async def _find_and_clean_orphaned_entities(
+        self,
+        current_file_set: Set[str],
+        current_state: Dict[str, FileIndexState],
+        collection_name: str,
+        storage_client: 'HybridQdrantClient'
+    ) -> Dict[str, Any]:
+        """Find and clean entities from files that no longer exist"""
+        stats = {
+            "orphaned_entities_found": 0,
+            "orphaned_entities_cleaned": 0,
+            "files_cleaned": []
+        }
+        
+        # Find files in state but not in current file set (deleted files)
+        deleted_files = set(current_state.keys()) - current_file_set
+        
+        if not deleted_files:
+            logger.debug("No orphaned entities found")
+            return stats
+        
+        logger.info(f"Found {len(deleted_files)} deleted files with potential orphaned entities")
+        
+        # Count and clean orphaned entities
+        for deleted_file in deleted_files:
+            try:
+                # Count entities before deletion
+                entity_count = await storage_client.count_points_by_filter(
+                    collection_name, {"file_path": deleted_file}
+                )
+                
+                if entity_count > 0:
+                    stats["orphaned_entities_found"] += entity_count
+                    
+                    # Delete orphaned entities
+                    deletion_result = await storage_client.delete_points_by_file_path(
+                        collection_name, deleted_file
+                    )
+                    
+                    if deletion_result.success:
+                        cleaned_count = deletion_result.affected_count
+                        stats["orphaned_entities_cleaned"] += cleaned_count
+                        stats["files_cleaned"].append(deleted_file)
+                        
+                        logger.info(f"Cleaned {cleaned_count} orphaned entities from {deleted_file}")
+                    else:
+                        logger.warning(f"Failed to clean orphaned entities from {deleted_file}")
+                
+                # Remove from incremental state
+                if deleted_file in current_state:
+                    del current_state[deleted_file]
+                
+            except Exception as e:
+                logger.error(f"Error cleaning orphaned entities from {deleted_file}: {e}")
+        
+        return stats
+    
+    async def _detect_and_mark_stale_entities(
+        self,
+        current_files: List[Path],
+        current_state: Dict[str, FileIndexState],
+        collection_name: str,
+        storage_client: 'HybridQdrantClient',
+        force_full_sync: bool = False
+    ) -> Dict[str, Any]:
+        """Detect entities that may be stale due to file modifications"""
+        stats = {
+            "stale_entities_found": 0,
+            "files_requiring_reindex": []
+        }
+        
+        for file_path in current_files:
+            file_key = str(file_path)
+            
+            try:
+                # Check if file needs reindexing (modified or not in state)
+                needs_reindex = False
+                
+                if file_key not in current_state:
+                    # New file
+                    needs_reindex = True
+                    logger.debug(f"New file detected: {file_path}")
+                elif force_full_sync:
+                    # Force reindex
+                    needs_reindex = True
+                    logger.debug(f"Force reindex: {file_path}")
+                elif self.change_detector.is_file_modified(file_path, current_state[file_key]):
+                    # Modified file
+                    needs_reindex = True
+                    logger.debug(f"Modified file detected: {file_path}")
+                
+                if needs_reindex:
+                    # Count existing entities for this file
+                    existing_count = await storage_client.count_points_by_filter(
+                        collection_name, {"file_path": file_key}
+                    )
+                    
+                    if existing_count > 0:
+                        stats["stale_entities_found"] += existing_count
+                        logger.debug(f"Found {existing_count} potentially stale entities in {file_path}")
+                    
+                    stats["files_requiring_reindex"].append(str(file_path))
+                
+            except Exception as e:
+                logger.error(f"Error checking staleness for {file_path}: {e}")
+        
+        return stats
+    
+    async def get_file_entity_count(
+        self,
+        file_path: str,
+        collection_name: str,
+        storage_client: Optional['HybridQdrantClient'] = None
+    ) -> int:
+        """
+        Get current entity count for a file from the collection.
+        
+        Args:
+            file_path: File path to check
+            collection_name: Collection to search in
+            storage_client: HybridQdrantClient for count operations
+            
+        Returns:
+            Number of entities found for the file
+        """
+        if not storage_client:
+            logger.warning("No storage client provided for entity count")
+            return 0
+        
+        try:
+            count = await storage_client.count_points_by_filter(
+                collection_name, {"file_path": file_path}
+            )
+            logger.debug(f"File {file_path} has {count} entities in {collection_name}")
+            return count
+            
+        except Exception as e:
+            logger.error(f"Error counting entities for file {file_path}: {e}")
+            return 0
     
     async def update_file_state(
         self,

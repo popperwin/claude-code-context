@@ -16,7 +16,8 @@ from qdrant_client.models import (
     VectorParams, Distance, PointStruct, Filter, FieldCondition, 
     MatchValue, MatchText, SearchParams, WithPayloadInterface, ScoredPoint,
     CreateCollection, CollectionInfo, CountRequest, SearchRequest,
-    TextIndexParams, TokenizerType, PayloadSchemaType
+    TextIndexParams, TokenizerType, PayloadSchemaType, PointsSelector,
+    FilterSelector
 )
 from qdrant_client.http.exceptions import ResponseHandlingException
 
@@ -848,6 +849,130 @@ class HybridQdrantClient:
             final_results.append(final_result)
         
         return final_results
+    
+    async def count_points_by_filter(
+        self,
+        collection_name: str,
+        filter_conditions: Optional[Dict[str, Any]] = None
+    ) -> int:
+        """
+        Count points matching filter conditions.
+        
+        Args:
+            collection_name: Collection to count in
+            filter_conditions: Filter conditions to match
+            
+        Returns:
+            Number of matching points
+        """
+        try:
+            # Build filter
+            search_filter = None
+            if filter_conditions:
+                search_filter = self._build_additional_filters(filter_conditions)
+            
+            # Count points
+            count_result = await asyncio.to_thread(
+                self.client.count,
+                collection_name=collection_name,
+                count_filter=search_filter
+            )
+            
+            return count_result.count if count_result else 0
+            
+        except Exception as e:
+            logger.error(f"Failed to count points in {collection_name}: {e}")
+            return 0
+    
+    async def delete_points_by_filter(
+        self,
+        collection_name: str,
+        filter_conditions: Dict[str, Any],
+        batch_size: int = 1000
+    ) -> StorageResult:
+        """
+        Delete points matching filter conditions.
+        
+        Args:
+            collection_name: Collection to delete from
+            filter_conditions: Filter conditions to match for deletion
+            batch_size: Maximum points to delete per batch
+            
+        Returns:
+            Storage operation result with deletion count
+        """
+        start_time = time.time()
+        
+        try:
+            # Build filter
+            search_filter = self._build_additional_filters(filter_conditions)
+            if not search_filter:
+                return StorageResult.failed_operation(
+                    "delete_points", collection_name, 
+                    "No valid filter conditions provided", 0
+                )
+            
+            # Count points to be deleted (for metrics)
+            total_count = await self.count_points_by_filter(collection_name, filter_conditions)
+            
+            if total_count == 0:
+                processing_time = (time.time() - start_time) * 1000
+                logger.info(f"No points to delete in {collection_name}")
+                return StorageResult.successful_delete(collection_name, 0, processing_time)
+            
+            # Delete points using filter selector
+            points_selector = FilterSelector(filter=search_filter)
+            
+            await asyncio.to_thread(
+                self.client.delete,
+                collection_name=collection_name,
+                points_selector=points_selector
+            )
+            
+            processing_time = (time.time() - start_time) * 1000
+            
+            logger.info(
+                f"Deleted {total_count} points from {collection_name} "
+                f"in {processing_time:.2f}ms"
+            )
+            
+            return StorageResult.successful_delete(
+                collection_name, total_count, processing_time
+            )
+            
+        except Exception as e:
+            processing_time = (time.time() - start_time) * 1000
+            error_msg = f"Failed to delete points from {collection_name}: {e}"
+            logger.error(error_msg)
+            
+            return StorageResult.failed_operation(
+                "delete_points", collection_name, error_msg, processing_time
+            )
+    
+    async def delete_points_by_file_path(
+        self,
+        collection_name: str,
+        file_path: str,
+        batch_size: int = 1000
+    ) -> StorageResult:
+        """
+        Delete all points associated with a specific file path.
+        
+        Args:
+            collection_name: Collection to delete from
+            file_path: File path to match for deletion
+            batch_size: Maximum points to delete per batch
+            
+        Returns:
+            Storage operation result with deletion count
+        """
+        filter_conditions = {"file_path": file_path}
+        
+        logger.debug(f"Deleting entities for file: {file_path} from {collection_name}")
+        
+        return await self.delete_points_by_filter(
+            collection_name, filter_conditions, batch_size
+        )
     
     async def get_collection_info(self, collection_name: str) -> Optional[Dict[str, Any]]:
         """Get information about a collection"""

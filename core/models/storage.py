@@ -322,6 +322,23 @@ class StorageResult(BaseModel):
         )
     
     @classmethod
+    def successful_delete(
+        cls,
+        collection_name: str,
+        count: int,
+        processing_time_ms: float
+    ) -> 'StorageResult':
+        """Create successful delete result"""
+        return cls(
+            operation='delete',
+            collection_name=collection_name,
+            success=True,
+            processing_time_ms=processing_time_ms,
+            affected_count=count,
+            total_count=count
+        )
+    
+    @classmethod
     def failed_operation(
         cls,
         operation: str,
