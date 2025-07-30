@@ -258,6 +258,11 @@ class CacheManager:
     - File cache: File metadata and change detection
     - Parse cache: Parsed results for unchanged files
     - Query cache: Search results with TTL
+    
+    TODO: Query cache (get_query_results/cache_query_results) is implemented but
+    not used by core/search/engine.py (HybridSearcher). Performance analysis shows
+    search targets already met without caching. Integration deferred due to cache
+    invalidation complexity and user expectation of real-time results.
     """
     
     def __init__(
@@ -497,6 +502,9 @@ class CacheManager:
             
         Returns:
             Cached results or None
+            
+        TODO: This method is unused by HybridSearcher. Performance analysis shows
+        search latency targets already met without result caching.
         """
         return await self.query_cache.get(query_key)
     
@@ -513,6 +521,9 @@ class CacheManager:
             query_key: Query cache key
             results: Search results to cache
             ttl: Custom TTL in seconds
+            
+        TODO: This method is unused by HybridSearcher. Performance analysis shows
+        search latency targets already met without result caching.
         """
         await self.query_cache.put(query_key, results, ttl)
     

@@ -65,6 +65,12 @@ class HybridSearcher:
     - Advanced result ranking and fusion
     - Query expansion and refinement
     - Performance optimization
+    
+    TODO: Query result caching is available in core/indexer/cache.py (CacheManager)
+    but not integrated with search layer. Performance targets already met without
+    caching (18ms payload, 85ms semantic, 95ms hybrid). Integration would add
+    complexity for cache invalidation, memory overhead, and stale data handling
+    without meaningful performance benefits for interactive development workflows.
     """
     
     def __init__(self, client: HybridQdrantClient, ranking_config: Optional[RankingConfig] = None):
