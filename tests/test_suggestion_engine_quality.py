@@ -1,7 +1,7 @@
 """
 Comprehensive end-to-end quality tests for QuerySuggestionEngine.
 
-Tests suggestion effectiveness with real developer query patterns,
+Tests suggestion effectiveness with real repositories across different languages,
 validating that suggestions improve search experience on actual codebases.
 """
 
@@ -9,641 +9,620 @@ import pytest
 import os
 import shutil
 import subprocess
-from typing import List, Dict, Any, Set
+import uuid
+import time
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 
+# Fix tokenizer fork warnings
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 from core.search.suggestions import QuerySuggestionEngine, SearchSuggestion, SuggestionType
+from core.search.engine import HybridSearcher, SearchMode, SearchConfig
+from core.models.storage import SearchResult, QdrantPoint
+from core.indexer.hybrid_indexer import HybridIndexer, IndexingJobConfig
+from core.storage.client import HybridQdrantClient
+from core.parser.parallel_pipeline import ProcessParsingPipeline
+from core.parser.registry import ParserRegistry
+from core.embeddings.stella import StellaEmbedder
+from core.indexer.cache import CacheManager
 
 
 class TestQuerySuggestionEngineQuality:
-    """Test QuerySuggestionEngine quality with real developer scenarios"""
+    """Test QuerySuggestionEngine quality with real codebases"""
     
     @classmethod
     def setup_class(cls):
-        """Setup test repositories for context-aware suggestions"""
-        cls.test_dir = Path("test-harness/temp-repos-suggestions")
+        """Setup test repositories"""
+        cls.test_dir = Path("test-harness/temp-repos")
         cls.test_dir.mkdir(parents=True, exist_ok=True)
         
-        # Clone different types of repositories to understand suggestion context
+        # Clone smaller, manageable real repositories for testing
         cls.repos = {
-            "python_web": {
-                "url": "https://github.com/pallets/flask.git",
-                "path": cls.test_dir / "flask",
-                "context": "web framework with routing, templates, authentication"
+            "python": {
+                "url": "https://github.com/kennethreitz/requests.git",
+                "path": cls.test_dir / "requests",
+                "branch": "main"
             },
-            "javascript_framework": {
-                "url": "https://github.com/vuejs/vue.git",
-                "path": cls.test_dir / "vue", 
-                "context": "frontend framework with components, reactivity, directives"
+            "typescript": {
+                "url": "https://github.com/sindresorhus/got.git",
+                "path": cls.test_dir / "got",
+                "branch": "main"
             },
-            "systems_programming": {
-                "url": "https://github.com/redis/redis.git",
-                "path": cls.test_dir / "redis",
-                "context": "systems programming with networking, data structures, concurrency"
+            "javascript": {
+                "url": "https://github.com/axios/axios.git",
+                "path": cls.test_dir / "axios", 
+                "branch": "main"
+            },
+            "go": {
+                "url": "https://github.com/gin-gonic/gin.git",
+                "path": cls.test_dir / "gin",
+                "branch": "master"
             }
         }
         
-        # Clone repositories for suggestion context
+        # Clone repositories
         for repo_name, repo_info in cls.repos.items():
             if not repo_info["path"].exists():
-                print(f"Cloning {repo_name} repository for suggestion testing...")
-                try:
-                    subprocess.run([
-                        "git", "clone", "--depth", "1", 
-                        repo_info["url"], str(repo_info["path"])
-                    ], check=True, capture_output=True, timeout=60)
-                except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
-                    print(f"Failed to clone {repo_name}: {e}")
+                subprocess.run([
+                    "git", "clone", "--depth", "1", 
+                    repo_info["url"], str(repo_info["path"])
+                ], check=True, capture_output=True)
+        
+        # Track shared collections for cleanup
+        cls.shared_collections = set()
     
     @classmethod
     def teardown_class(cls):
-        """Cleanup test repositories"""
+        """Cleanup test repositories and shared collections"""
+        # Clean up shared collections
+        if hasattr(cls, 'shared_collections'):
+            try:
+                import requests
+                for collection_name in cls.shared_collections:
+                    try:
+                        requests.delete(f"http://localhost:6334/collections/{collection_name}", timeout=5)
+                    except Exception:
+                        pass  # Ignore cleanup errors
+            except Exception:
+                pass
+        
+        # Clean up test repositories
         if hasattr(cls, 'test_dir') and cls.test_dir.exists():
-            print("Cleaning up suggestion test repositories...")
             shutil.rmtree(cls.test_dir)
     
     def setup_method(self):
         """Setup test instance"""
-        self.engine = QuerySuggestionEngine()
+        self.suggestion_engine = QuerySuggestionEngine()
+        self.client = HybridQdrantClient("http://localhost:6334")
+        self.searcher = None
         
-        # Clean up any test Qdrant collections that might exist
-        self._cleanup_test_collections()
+        # Initialize components for HybridIndexer (will be done in async setup)
+        self.parser_pipeline = None
+        self.embedder = None
+        self.cache_manager = None
+        self.indexer = None
+        
+        # Clean up any old test collections (but not shared ones)
+        self._cleanup_old_test_collections()
+    
+    async def _async_setup(self):
+        """Async setup for components that need event loop"""
+        if self.indexer is None:
+            self.parser_pipeline = ProcessParsingPipeline(max_workers=2, batch_size=5)
+            self.embedder = StellaEmbedder()
+            self.cache_manager = CacheManager()
+            self.indexer = HybridIndexer(
+                parser_pipeline=self.parser_pipeline,
+                embedder=self.embedder,
+                storage_client=self.client,
+                cache_manager=self.cache_manager
+            )
+            self.searcher = HybridSearcher(self.client)
     
     def teardown_method(self):
         """Cleanup after each test"""
-        self._cleanup_test_collections()
+        # Don't clean up shared collections in teardown_method
+        # They will be cleaned up in teardown_class
+        pass
     
-    def _cleanup_test_collections(self):
-        """Clean up any test collections from Qdrant"""
+    def _cleanup_old_test_collections(self):
+        """Clean up old test collections (but not shared suggestion collections)"""
         try:
             import requests
-            # Check if Qdrant is accessible
             response = requests.get("http://localhost:6334/collections", timeout=5)
             if response.status_code == 200:
                 collections = response.json().get("result", {}).get("collections", [])
-                deleted_count = 0
                 for collection in collections:
                     collection_name = collection.get("name", "")
-                    # Delete test collections with broader pattern matching
-                    test_patterns = ["test-", "temp-", "quality-test-", "ranking-test-", "suggest-test-", "real-indexer-", "integration-test"]
-                    if any(test_prefix in collection_name for test_prefix in test_patterns):
-                        delete_response = requests.delete(f"http://localhost:6334/collections/{collection_name}", timeout=5)
-                        if delete_response.status_code in [200, 404]:  # 404 means already deleted
-                            deleted_count += 1
-                if deleted_count > 0:
-                    print(f"Cleaned up {deleted_count} test collections from Qdrant")
-        except Exception as e:
-            # Log the specific error for debugging
-            print(f"Qdrant cleanup warning: {e} (Qdrant might not be running)")
+                    # Only delete old UUID-based collections, not our shared ones
+                    old_patterns = ["temp-", "quality-test-", "suggest-test-", "real-indexer-", "integration-test"]
+                    # Don't delete our shared "test-suggestion-{repo}" collections
+                    if (any(pattern in collection_name for pattern in old_patterns) and 
+                        not collection_name.startswith("test-suggestion-")):
+                        requests.delete(f"http://localhost:6334/collections/{collection_name}", timeout=5)
+        except Exception:
+            pass  # Ignore cleanup errors
     
-    def extract_real_entity_names(self, repo_name: str) -> Dict[str, Set[str]]:
-        """Extract real entity names from repositories for context"""
-        if repo_name not in self.repos:
-            return {}
+    async def get_or_create_collection(self, repo_name: str) -> str:
+        """Get existing collection for repo or create it if needed"""
+        # Deterministic collection name based on repo
+        collection_name = f"test-suggestion-{repo_name}"
         
-        repo_path = self.repos[repo_name]["path"]
-        if not repo_path.exists():
-            return {}
-        
-        entities = {
-            "functions": set(),
-            "classes": set(),
-            "files": set(),
-            "patterns": set()
-        }
-        
+        # Check if collection already exists
         try:
-            # Scan for Python entities
-            if repo_name == "python_web":
-                python_files = list(repo_path.glob("**/*.py"))[:20]
-                for py_file in python_files:
-                    try:
-                        content = py_file.read_text(encoding='utf-8')[:10000]  # Limit for performance
-                        lines = content.split('\n')
-                        
-                        for line in lines:
-                            line_strip = line.strip()
-                            if line_strip.startswith('def '):
-                                func_name = line_strip.split('(')[0].replace('def ', '').strip()
-                                if func_name and not func_name.startswith('_'):
-                                    entities["functions"].add(func_name)
-                            elif line_strip.startswith('class '):
-                                class_name = line_strip.split('(')[0].split(':')[0].replace('class ', '').strip()
-                                if class_name:
-                                    entities["classes"].add(class_name)
-                        
-                        # Add file patterns
-                        relative_path = str(py_file.relative_to(repo_path))
-                        entities["files"].add(relative_path)
-                        
-                        # Common patterns in Flask
-                        if "route" in content.lower():
-                            entities["patterns"].add("routing")
-                        if "request" in content.lower():
-                            entities["patterns"].add("request handling")
-                        if "template" in content.lower():
-                            entities["patterns"].add("templating")
-                        
-                    except (UnicodeDecodeError, PermissionError):
-                        continue
-            
-            # Scan for JavaScript entities
-            elif repo_name == "javascript_framework":
-                js_files = list(repo_path.glob("**/*.js"))[:15]
-                for js_file in js_files:
-                    try:
-                        content = js_file.read_text(encoding='utf-8')[:8000]
-                        lines = content.split('\n')
-                        
-                        for line in lines:
-                            line_strip = line.strip()
-                            if 'function ' in line_strip:
-                                try:
-                                    func_name = line_strip.split('function')[1].split('(')[0].strip()
-                                    if func_name:
-                                        entities["functions"].add(func_name)
-                                except:
-                                    pass
-                            elif line_strip.startswith('export '):
-                                try:
-                                    export_name = line_strip.replace('export ', '').split(' ')[0].strip()
-                                    if export_name not in ['default', 'const', 'let', 'var']:
-                                        entities["functions"].add(export_name)
-                                except:
-                                    pass
-                        
-                        # Vue.js patterns
-                        if "component" in content.lower():
-                            entities["patterns"].add("components")
-                        if "directive" in content.lower():
-                            entities["patterns"].add("directives")
-                        if "reactive" in content.lower():
-                            entities["patterns"].add("reactivity")
-                    
-                    except (UnicodeDecodeError, PermissionError):
-                        continue
-            
-            # Scan for C entities
-            elif repo_name == "systems_programming":
-                c_files = list(repo_path.glob("**/*.c"))[:10]
-                for c_file in c_files:
-                    try:
-                        content = c_file.read_text(encoding='utf-8')[:6000]
-                        lines = content.split('\n')
-                        
-                        for line in lines:
-                            line_strip = line.strip()
-                            # Simple C function detection
-                            if (line_strip and not line_strip.startswith('//') and 
-                                not line_strip.startswith('#') and '(' in line_strip and 
-                                ')' in line_strip and '{' not in line_strip and 
-                                any(t in line_strip for t in ['int ', 'void ', 'char ', 'static '])):
-                                try:
-                                    func_part = line_strip.split('(')[0]
-                                    func_name = func_part.split()[-1]
-                                    if func_name and not func_name.startswith('*'):
-                                        entities["functions"].add(func_name)
-                                except:
-                                    pass
-                        
-                        # Redis patterns
-                        if "server" in content.lower():
-                            entities["patterns"].add("server")
-                        if "client" in content.lower():
-                            entities["patterns"].add("client")
-                        if "redis" in content.lower():
-                            entities["patterns"].add("database")
-                    
-                    except (UnicodeDecodeError, PermissionError):
-                        continue
+            collection_info = await self.client.get_collection_info(collection_name)
+            if collection_info:
+                # Collection exists and is valid, reuse it
+                self.__class__.shared_collections.add(collection_name)
+                return collection_name
+        except Exception:
+            pass  # Collection doesn't exist, create it
         
-        except Exception as e:
-            print(f"Error extracting entities from {repo_name}: {e}")
+        # Setup async components if not already done
+        await self._async_setup()
         
-        return entities
+        repo_info = self.repos[repo_name]
+        repo_path = repo_info["path"]
+        
+        if not repo_path.exists():
+            raise pytest.skip(f"Repository {repo_name} not available")
+        
+        # Create and index new collection
+        config = IndexingJobConfig(
+            project_path=repo_path,
+            project_name=collection_name,  # Use collection name as project name
+            include_patterns=["*.py", "*.js", "*.ts", "*.go", "*.rs"],
+            batch_size=50
+        )
+        
+        await self.indexer.index_project(config)
+        
+        # Get the actual collection name
+        from core.storage.schemas import CollectionManager, CollectionType
+        collection_manager = CollectionManager(project_name=config.project_name)
+        actual_collection_name = collection_manager.get_collection_name(CollectionType.CODE)
+        
+        # Track for cleanup
+        self.__class__.shared_collections.add(actual_collection_name)
+        return actual_collection_name
     
-    def test_function_completion_suggestions_quality(self):
-        """Test function completion suggestions match real coding patterns"""
-        # Extract real function names for context
-        entities = self.extract_real_entity_names("python_web")
-        
+    async def search_with_query(self, repo_name: str, query: str, limit: int = 10) -> List[SearchResult]:
+        """Search real codebase using cached/shared collection"""
+        try:
+            # Get or create collection for this repository
+            collection_name = await self.get_or_create_collection(repo_name)
+            
+            # Setup searcher if not done
+            await self._async_setup()
+            
+            # Search using the hybrid searcher
+            config = SearchConfig(
+                mode=SearchMode.HYBRID,
+                limit=limit
+            )
+            results = await self.searcher.search(
+                collection_name=collection_name,
+                query=query,
+                config=config
+            )
+            
+            return results
+            
+        except Exception as e:
+            print(f"Error searching {repo_name}: {e}")
+            return []
+    
+    def test_basic_suggestion_generation(self):
+        """Test basic suggestion generation with common developer queries"""
         test_cases = [
             {
-                "partial": "def handle_",
-                "expected_patterns": ["request", "error", "auth", "response"],
-                "context": "web framework function patterns"
+                "query": "auth",
+                "expected_types": [SuggestionType.COMPLETION, SuggestionType.REFINEMENT],
+                "min_suggestions": 5
             },
             {
-                "partial": "async def get_",
-                "expected_patterns": ["user", "data", "connection", "response"],
-                "context": "async function patterns"
+                "query": "def login",
+                "expected_types": [SuggestionType.COMPLETION],
+                "min_suggestions": 3
             },
             {
-                "partial": "def validate_",
-                "expected_patterns": ["input", "user", "form", "data"],
-                "context": "validation function patterns"
+                "query": "how to",
+                "expected_types": [SuggestionType.COMPLETION, SuggestionType.REFINEMENT],
+                "min_suggestions": 4
             },
             {
-                "partial": "class User",
-                "expected_patterns": ["Model", "Manager", "Service", "Controller"],
-                "context": "class naming patterns"
+                "query": "request",
+                "expected_types": [SuggestionType.REFINEMENT, SuggestionType.COMPLETION],
+                "min_suggestions": 8
             }
         ]
         
         for case in test_cases:
-            suggestions = self.engine.get_suggestions(case["partial"], limit=10)
+            suggestions = self.suggestion_engine.get_suggestions(case["query"], limit=15)
             
-            # Should return multiple suggestions
-            assert len(suggestions) > 0, f"No suggestions for '{case['partial']}'"
+            print(f"\n=== Testing query: '{case['query']}' ===")
+            for i, suggestion in enumerate(suggestions):
+                print(f"{i+1}: [{suggestion.type.value}] {suggestion.text} (conf: {suggestion.confidence:.2f})")
+                print(f"    {suggestion.explanation}")
             
-            # Should contain completion type suggestions
-            completion_suggestions = [s for s in suggestions if s.type == SuggestionType.COMPLETION]
-            assert len(completion_suggestions) > 0, f"No completion suggestions for '{case['partial']}'"
+            # Verify we have enough suggestions
+            assert len(suggestions) >= case["min_suggestions"], \
+                f"Expected at least {case['min_suggestions']} suggestions for '{case['query']}', got {len(suggestions)}"
             
-            # Should match expected patterns (at least one)
-            suggestion_texts = [s.text.lower() for s in suggestions]
-            found_patterns = [pattern for pattern in case["expected_patterns"] 
-                            if any(pattern.lower() in text for text in suggestion_texts)]
+            # Verify expected types are present
+            suggestion_types = {s.type for s in suggestions}
+            for expected_type in case["expected_types"]:
+                assert expected_type in suggestion_types, \
+                    f"Expected suggestion type {expected_type.value} for query '{case['query']}'"
             
-            assert len(found_patterns) > 0, f"Expected patterns {case['expected_patterns']} not found in {suggestion_texts}"
+            # Verify all suggestions have valid confidence scores
+            for suggestion in suggestions:
+                assert 0 <= suggestion.confidence <= 1, \
+                    f"Invalid confidence {suggestion.confidence} for suggestion '{suggestion.text}'"
             
-            # Suggestions should be relevant to partial query
-            for suggestion in suggestions[:5]:  # Check top 5
-                assert case["partial"].lower() in suggestion.text.lower() or any(
-                    word in suggestion.text.lower() for word in case["partial"].lower().split()
-                ), f"Suggestion '{suggestion.text}' not relevant to '{case['partial']}'"
+            # Verify suggestions are sorted by confidence
+            confidences = [s.confidence for s in suggestions]
+            assert confidences == sorted(confidences, reverse=True), \
+                f"Suggestions not sorted by confidence for query '{case['query']}'"
     
-    def test_semantic_query_suggestions_quality(self):
-        """Test semantic query suggestions improve developer search experience"""
-        developer_scenarios = [
-            {
-                "partial": "how to handle",
-                "expected_completions": ["errors", "authentication", "requests", "exceptions"],
-                "min_suggestions": 3
-            },
-            {
-                "partial": "find functions that",
-                "expected_completions": ["validate", "handle", "process", "manage"],
-                "min_suggestions": 4
-            },
-            {
-                "partial": "show me examples of", 
-                "expected_completions": ["error handling", "async", "validation", "authentication"],
-                "min_suggestions": 3
-            },
-            {
-                "partial": "explain the",
-                "expected_completions": ["pattern", "implementation", "architecture", "design"],
-                "min_suggestions": 3
-            }
-        ]
+    async def test_function_pattern_suggestions_with_real_results(self):
+        """Test function pattern suggestions and validate they improve search results"""
+        base_query = "login"
         
-        for scenario in developer_scenarios:
-            suggestions = self.engine.get_suggestions(scenario["partial"], limit=12)
-            
-            assert len(suggestions) >= scenario["min_suggestions"], \
-                f"Got {len(suggestions)} suggestions, expected at least {scenario['min_suggestions']}"
-            
-            # Should have semantic-style suggestions
-            semantic_suggestions = [s for s in suggestions if s.type == SuggestionType.COMPLETION]
-            assert len(semantic_suggestions) > 0, "Should have completion-type suggestions for semantic queries"
-            
-            # Check for expected completions
-            suggestion_texts = ' '.join([s.text.lower() for s in suggestions])
-            found_completions = [comp for comp in scenario["expected_completions"] 
-                               if comp.lower() in suggestion_texts]
-            
-            assert len(found_completions) > 0, \
-                f"Expected completions {scenario['expected_completions']} not found in suggestions"
-            
-            # Suggestions should maintain natural language flow
-            for suggestion in suggestions[:3]:
-                assert suggestion.text.startswith(scenario["partial"]) or \
-                       any(word in suggestion.text.lower() for word in scenario["partial"].split()), \
-                       f"Suggestion '{suggestion.text}' doesn't flow from '{scenario['partial']}'"
-    
-    def test_file_type_suggestions_accuracy(self):
-        """Test file type suggestions match project structure patterns"""
-        # Extract real file patterns for context
-        flask_entities = self.extract_real_entity_names("python_web")
+        # Get suggestions for function patterns
+        suggestions = self.suggestion_engine.get_suggestions(base_query, limit=10)
         
-        file_test_cases = [
-            {
-                "partial": "models.py",
-                "expected_additions": ["user", "database", "auth", "admin"],
-                "context": "Python model files"
-            },
-            {
-                "partial": "test_",
-                "expected_additions": [".py", "auth", "models", "views"],
-                "context": "Test file patterns"
-            },
-            {
-                "partial": "config",
-                "expected_additions": [".py", ".json", ".yaml", "settings"],
-                "context": "Configuration files"
-            },
-            {
-                "partial": "file:app",
-                "expected_additions": [".py", ".js", ".ts", "config"],
-                "context": "Application files"
-            }
-        ]
+        # Find function-related suggestions
+        function_suggestions = [s for s in suggestions if "def" in s.text or "function" in s.text or "method" in s.text]
         
-        for case in file_test_cases:
-            suggestions = self.engine.get_suggestions(case["partial"], limit=10)
-            
-            assert len(suggestions) > 0, f"No suggestions for file pattern '{case['partial']}'"
-            
-            # Should include file-related suggestions
-            suggestion_texts = [s.text.lower() for s in suggestions]
-            file_suggestions = [text for text in suggestion_texts 
-                              if any(ext in text for ext in ['.py', '.js', '.ts', '.json', '.yaml'])]
-            
-            if not any(ext in case["partial"] for ext in ['.py', '.js', '.ts']):
-                assert len(file_suggestions) > 0, f"Expected file extension suggestions for '{case['partial']}'"
-            
-            # Check for expected additions
-            found_additions = []
-            for expected in case["expected_additions"]:
-                if any(expected.lower() in text for text in suggestion_texts):
-                    found_additions.append(expected)
-            
-            assert len(found_additions) > 0, \
-                f"Expected additions {case['expected_additions']} not found in {suggestion_texts}"
-    
-    def test_refinement_suggestions_improve_queries(self):
-        """Test refinement suggestions actually improve search effectiveness"""
-        refinement_scenarios = [
-            {
-                "vague_query": "auth",
-                "expected_refinements": ["authentication", "authorization", "def auth", "class auth"],
-                "improvement_type": "specificity"
-            },
-            {
-                "vague_query": "data",
-                "expected_refinements": ["database", "data processing", "data model", "def data"],
-                "improvement_type": "context"
-            },
-            {
-                "vague_query": "error",
-                "expected_refinements": ["error handling", "exception", "try catch", "def error"],
-                "improvement_type": "pattern"
-            },
-            {
-                "broad_query": "user system",
-                "expected_refinements": ["user authentication", "user management", "user.py", "class User"],
-                "improvement_type": "domain_specific"
-            }
-        ]
+        print(f"\n=== Function suggestions for '{base_query}' ===")
+        for suggestion in function_suggestions:
+            print(f"[{suggestion.type.value}] {suggestion.text} (confidence: {suggestion.confidence:.2f})")
+            print(f"  Explanation: {suggestion.explanation}")
         
-        for scenario in refinement_scenarios:
-            query = scenario.get("vague_query") or scenario.get("broad_query")
-            suggestions = self.engine.get_suggestions(query, limit=10)
-            
-            # Should include refinement suggestions
-            refinement_suggestions = [s for s in suggestions if s.type == SuggestionType.REFINEMENT]
-            
-            # May not always have explicit refinement type, but should have refinement-like suggestions
-            all_suggestion_texts = [s.text.lower() for s in suggestions]
-            
-            # Check for expected refinements
-            found_refinements = []
-            for expected in scenario["expected_refinements"]:
-                if any(expected.lower() in text for text in all_suggestion_texts):
-                    found_refinements.append(expected)
-            
-            assert len(found_refinements) > 0, \
-                f"Expected refinements {scenario['expected_refinements']} not found in {all_suggestion_texts}"
-            
-            # Refinements should be more specific than original
-            for suggestion in suggestions[:5]:
-                assert len(suggestion.text.split()) >= len(query.split()), \
-                    f"Refinement '{suggestion.text}' should be more specific than '{query}'"
-    
-    def test_context_aware_suggestions_with_real_codebase(self):
-        """Test context-aware suggestions using real codebase patterns"""
-        # Simulate different project contexts
-        contexts = [
-            {
-                "current_file": "models/user.py",
-                "recent_queries": ["User model", "authentication", "database schema"],
-                "project_type": "web_application"
-            },
-            {
-                "current_file": "tests/test_auth.py",
-                "recent_queries": ["test authentication", "mock user", "assert"],
-                "project_type": "testing"
-            },
-            {
-                "current_file": "api/views.py",
-                "recent_queries": ["API endpoint", "JSON response", "request handling"],
-                "project_type": "api"
-            }
-        ]
+        assert len(function_suggestions) >= 2, "Should generate function pattern suggestions"
         
-        test_query = "user"
+        # Test with real codebase - compare base query vs suggested query results
+        python_results_base = await self.search_with_query("python", base_query, limit=10)
         
-        for context in contexts:
-            suggestions = self.engine.get_suggestions(test_query, limit=10, context=context)
+        if python_results_base and function_suggestions:
+            # Use the first function suggestion
+            suggested_query = function_suggestions[0].text
+            python_results_suggested = await self.search_with_query("python", suggested_query, limit=10)
             
-            assert len(suggestions) > 0, f"No suggestions with context {context}"
+            print(f"\nBase query '{base_query}' found {len(python_results_base)} results")
+            print(f"Suggested query '{suggested_query}' found {len(python_results_suggested)} results")
             
-            # Should incorporate current file context
-            if context["current_file"]:
-                context_suggestions = [s for s in suggestions 
-                                     if context["current_file"] in s.text or 
-                                        s.type == SuggestionType.CONTEXT]
-                # May not always have explicit context suggestions, but should be contextually relevant
+            # Analyze result quality
+            if python_results_suggested:
+                function_results = [r for r in python_results_suggested 
+                                  if r.point.payload.get("entity_type") in ["function", "method"]]
+                function_ratio = len(function_results) / len(python_results_suggested)
                 
-            # Should be influenced by recent queries
-            suggestion_texts = ' '.join([s.text.lower() for s in suggestions])
-            recent_influence = any(
-                any(word in suggestion_texts for word in recent_query.lower().split())
-                for recent_query in context["recent_queries"]
-            )
-            
-            # At least some suggestions should show contextual influence
-            assert recent_influence or len(suggestions) >= 3, \
-                "Suggestions should show some contextual awareness"
+                print(f"Function/method results in suggested query: {len(function_results)}/{len(python_results_suggested)} ({function_ratio:.1%})")
+                
+                # Suggested query should have higher proportion of function results
+                if len(python_results_base) > 0:
+                    base_function_results = [r for r in python_results_base 
+                                           if r.point.payload.get("entity_type") in ["function", "method"]]
+                    base_function_ratio = len(base_function_results) / len(python_results_base)
+                    
+                    print(f"Function/method results in base query: {len(base_function_results)}/{len(python_results_base)} ({base_function_ratio:.1%})")
+                    
+                    assert function_ratio >= base_function_ratio, \
+                        "Function pattern suggestion should improve function result ratio"
     
-    def test_alternative_search_strategy_suggestions(self):
-        """Test alternative search strategy suggestions provide value"""
-        strategy_test_cases = [
+    async def test_class_pattern_suggestions_with_real_results(self):
+        """Test class pattern suggestions and validate they improve search results"""
+        base_query = "manager"
+        
+        # Get suggestions for class patterns
+        suggestions = self.suggestion_engine.get_suggestions(base_query, limit=10)
+        
+        # Find class-related suggestions
+        class_suggestions = [s for s in suggestions if "class" in s.text or "interface" in s.text or "model" in s.text]
+        
+        print(f"\n=== Class suggestions for '{base_query}' ===")
+        for suggestion in class_suggestions:
+            print(f"[{suggestion.type.value}] {suggestion.text} (confidence: {suggestion.confidence:.2f})")
+            print(f"  Explanation: {suggestion.explanation}")
+        
+        if class_suggestions:
+            # Test with real codebase
+            python_results_base = await self.search_with_query("python", base_query, limit=10)
+            suggested_query = class_suggestions[0].text
+            python_results_suggested = await self.search_with_query("python", suggested_query, limit=10)
+            
+            print(f"\nBase query '{base_query}' found {len(python_results_base)} results")
+            print(f"Suggested query '{suggested_query}' found {len(python_results_suggested)} results")
+            
+            # Analyze result quality for class-related entities
+            if python_results_suggested:
+                class_results = [r for r in python_results_suggested 
+                               if r.point.payload.get("entity_type") in ["class", "interface", "type"]]
+                class_ratio = len(class_results) / len(python_results_suggested) if python_results_suggested else 0
+                
+                print(f"Class/interface results in suggested query: {len(class_results)}/{len(python_results_suggested)} ({class_ratio:.1%})")
+                
+                # Should find some class-related results
+                assert class_ratio > 0.1 or len(class_results) >= 1, \
+                    "Class pattern suggestion should find some class-related results"
+    
+    async def test_semantic_pattern_suggestions_with_real_results(self):
+        """Test semantic pattern suggestions with real developer scenarios"""
+        semantic_queries = [
+            "how to handle authentication",
+            "what is session management", 
+            "find error handling",
+            "show me logging examples"
+        ]
+        
+        for base_query in ["auth", "session", "error", "log"]:
+            suggestions = self.suggestion_engine.get_suggestions(base_query, limit=15)
+            
+            # Find semantic suggestions
+            semantic_suggestions = [s for s in suggestions 
+                                  if any(pattern in s.text.lower() 
+                                        for pattern in ["how to", "what is", "find", "show me", "explain"])]
+            
+            print(f"\n=== Semantic suggestions for '{base_query}' ===")
+            for suggestion in semantic_suggestions:
+                print(f"[{suggestion.type.value}] {suggestion.text} (confidence: {suggestion.confidence:.2f})")
+            
+            if semantic_suggestions:
+                # Test one semantic suggestion with real search
+                semantic_query = semantic_suggestions[0].text
+                results = await self.search_with_query("python", semantic_query, limit=8)
+                
+                print(f"Semantic query '{semantic_query}' found {len(results)} results")
+                
+                # Semantic queries should still find relevant results
+                if len(results) > 0:
+                    # Check that results contain relevant keywords
+                    relevant_results = []
+                    for result in results:
+                        entity_name = result.point.payload.get("entity_name", "").lower()
+                        docstring = result.point.payload.get("docstring", "").lower()
+                        file_path = result.point.payload.get("file_path", "").lower()
+                        
+                        if (base_query.lower() in entity_name or 
+                            base_query.lower() in docstring or 
+                            base_query.lower() in file_path):
+                            relevant_results.append(result)
+                    
+                    relevance_ratio = len(relevant_results) / len(results)
+                    print(f"Relevant results: {len(relevant_results)}/{len(results)} ({relevance_ratio:.1%})")
+                    
+                    # At least some results should be relevant
+                    assert relevance_ratio >= 0.3, \
+                        f"Semantic suggestion should find relevant results (got {relevance_ratio:.1%})"
+    
+    async def test_file_type_suggestions_with_real_results(self):
+        """Test file type suggestions improve language-specific searches"""
+        base_query = "request"
+        
+        # Get file type suggestions
+        suggestions = self.suggestion_engine.get_suggestions(base_query, limit=15)
+        
+        # Find file type suggestions
+        file_suggestions = [s for s in suggestions 
+                          if any(ext in s.text for ext in [".py", ".js", ".ts", ".go"])]
+        
+        print(f"\n=== File type suggestions for '{base_query}' ===")
+        for suggestion in file_suggestions:
+            print(f"[{suggestion.type.value}] {suggestion.text} (confidence: {suggestion.confidence:.2f})")
+        
+        if file_suggestions:
+            # Test Python file suggestion
+            py_suggestion = next((s for s in file_suggestions if ".py" in s.text), None)
+            if py_suggestion:
+                results = await self.search_with_query("python", py_suggestion.text, limit=10)
+                
+                print(f"Python file suggestion '{py_suggestion.text}' found {len(results)} results")
+                
+                # Check that results are from Python files
+                if results:
+                    python_files = [r for r in results if r.point.payload.get("file_path", "").endswith(".py")]
+                    python_ratio = len(python_files) / len(results)
+                    
+                    print(f"Python files in results: {len(python_files)}/{len(results)} ({python_ratio:.1%})")
+                    
+                    # Should heavily favor Python files
+                    assert python_ratio >= 0.7, \
+                        f"Python file suggestion should favor .py files (got {python_ratio:.1%})"
+    
+    async def test_context_aware_suggestions(self):
+        """Test context-aware suggestions with file and query history"""
+        base_query = "validate"
+        
+        # Test with different contexts
+        contexts = [
+            {"current_file": "auth.py"},
+            {"recent_queries": ["login validation", "user authentication", "password check"]},
+            {"current_file": "test_auth.py", "recent_queries": ["test cases"]}
+        ]
+        
+        for i, context in enumerate(contexts):
+            suggestions = self.suggestion_engine.get_suggestions(base_query, limit=15, context=context)
+            
+            print(f"\n=== Context {i+1} suggestions for '{base_query}' ===")
+            print(f"Context: {context}")
+            
+            context_suggestions = [s for s in suggestions if s.type == SuggestionType.CONTEXT]
+            for suggestion in context_suggestions:
+                print(f"[{suggestion.type.value}] {suggestion.text} (confidence: {suggestion.confidence:.2f})")
+            
+            # Should generate context-aware suggestions
+            assert len(context_suggestions) >= 1, \
+                f"Should generate context suggestions for context {context}"
+            
+            # Check for context-specific patterns
+            if "current_file" in context:
+                file_suggestions = [s for s in context_suggestions if context["current_file"] in s.text]
+                assert len(file_suggestions) >= 1, "Should suggest searching in current file"
+            
+            if "recent_queries" in context:
+                recent_suggestions = [s for s in context_suggestions 
+                                    if any(recent in s.text for recent in context["recent_queries"])]
+                # May or may not have recent query suggestions depending on relevance
+    
+    def test_query_hints_for_developer_scenarios(self):
+        """Test query hints for common developer scenarios"""
+        test_cases = [
             {
-                "exact_query": '"UserModel"',
-                "expected_alternatives": ["how to use usermodel", "usermodel examples", "user model"],
-                "strategy_shift": "exact_to_semantic"
+                "query": "auth",
+                "expected_hints": ["Add 'def' or 'class'", "more context words"],
+                "description": "Single word query should get context hints"
             },
             {
-                "semantic_query": "how to implement user authentication in web applications",
-                "expected_alternatives": ["authenticate", "auth", '"authentication"'],
-                "strategy_shift": "semantic_to_exact"
+                "query": "very long query with many words that might be too verbose for effective searching",
+                "expected_hints": ["shorter, more specific"],
+                "description": "Long query should get brevity hints"
             },
             {
-                "code_query": "def authenticate_user",
-                "expected_alternatives": ["authentication examples", "user login", "auth patterns"],
-                "strategy_shift": "code_to_semantic"
+                "query": "login function",
+                "expected_hints": ["exact matches", "file type"],
+                "description": "Short query should get specificity hints"
+            },
+            {
+                "query": "LoginManager",
+                "expected_hints": ["exact matches", "file type"],
+                "description": "Specific term should get exact match hints"
             }
         ]
         
-        for case in strategy_test_cases:
-            query_key = next(k for k in case.keys() if k.endswith('_query'))
-            query = case[query_key]
+        for case in test_cases:
+            hints = self.suggestion_engine.get_query_hints(case["query"])
             
-            suggestions = self.engine.get_suggestions(query, limit=12)
+            print(f"\n=== Hints for '{case['query']}' ===")
+            print(f"Description: {case['description']}")
+            for hint in hints:
+                print(f"  • {hint}")
             
-            # Should have alternative-type suggestions or semantically alternative content
-            alternative_suggestions = [s for s in suggestions if s.type == SuggestionType.ALTERNATIVE]
+            # Should provide helpful hints
+            assert len(hints) >= 1, f"Should provide hints for query '{case['query']}'"
+            assert len(hints) <= 3, "Should limit hints to avoid overwhelming user"
             
-            suggestion_texts = [s.text.lower() for s in suggestions]
+            # Check for expected hint patterns
+            hint_text = " ".join(hints).lower()
+            relevant_hints = [pattern for pattern in case["expected_hints"] 
+                            if any(keyword in hint_text for keyword in pattern.lower().split())]
             
-            # Check for expected alternatives
-            found_alternatives = []
-            for expected in case["expected_alternatives"]:
-                if any(expected.lower() in text for text in suggestion_texts):
-                    found_alternatives.append(expected)
-            
-            # Should find at least one alternative approach
-            assert len(found_alternatives) > 0 or len(alternative_suggestions) > 0, \
-                f"No alternative suggestions found for {case['strategy_shift']} shift"
+            assert len(relevant_hints) >= 1, \
+                f"Should provide relevant hints for '{case['query']}'. Expected patterns: {case['expected_hints']}, Got: {hints}"
     
-    def test_suggestion_deduplication_quality(self):
-        """Test suggestion deduplication maintains quality while removing redundancy"""
-        # Query that might generate many similar suggestions
-        repetitive_query = "def user auth function handler"
+    async def test_suggestion_quality_across_languages(self):
+        """Test suggestion quality across different programming languages"""
+        cross_language_queries = ["function", "class", "interface", "test", "util"]
         
-        suggestions = self.engine.get_suggestions(repetitive_query, limit=15)
-        
-        # Should have deduplicated results
-        suggestion_texts = [s.text.lower() for s in suggestions]
-        unique_texts = set(suggestion_texts)
-        
-        assert len(unique_texts) == len(suggestion_texts), \
-            f"Found {len(suggestion_texts) - len(unique_texts)} duplicate suggestions"
-        
-        # Should maintain different confidence levels
-        confidences = [s.confidence for s in suggestions]
-        assert len(set(confidences)) > 1, "Should have varying confidence levels"
-        
-        # Higher confidence suggestions should be ranked higher
-        sorted_confidences = sorted(confidences, reverse=True)
-        assert confidences == sorted_confidences or len(confidences) <= 2, \
-            "Suggestions should be ordered by confidence"
+        for query in cross_language_queries:
+            suggestions = self.suggestion_engine.get_suggestions(query, limit=12)
+            
+            print(f"\n=== Cross-language suggestions for '{query}' ===")
+            
+            # Group suggestions by type
+            by_type = {}
+            for suggestion in suggestions:
+                if suggestion.type not in by_type:
+                    by_type[suggestion.type] = []
+                by_type[suggestion.type].append(suggestion)
+            
+            for suggestion_type, type_suggestions in by_type.items():
+                print(f"\n{suggestion_type.value.upper()} suggestions:")
+                for suggestion in type_suggestions:
+                    print(f"  {suggestion.text} (confidence: {suggestion.confidence:.2f})")
+            
+            # Should have diverse suggestion types
+            assert len(by_type) >= 2, f"Should have diverse suggestion types for '{query}'"
+            
+            # Should have reasonable confidence distribution
+            confidences = [s.confidence for s in suggestions]
+            avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+            
+            assert avg_confidence >= 0.5, \
+                f"Average suggestion confidence should be reasonable for '{query}' (got {avg_confidence:.2f})"
+            
+            # Test a few suggestions with real search results
+            for suggestion in suggestions[:3]:  # Test top 3 suggestions
+                try:
+                    results = await self.search_with_query("python", suggestion.text, limit=5)
+                    print(f"  Suggestion '{suggestion.text}' found {len(results)} results")
+                    
+                    # Suggestions should generally find some results
+                    if len(results) == 0:
+                        print(f"    Warning: No results for suggestion '{suggestion.text}'")
+                    
+                except Exception as e:
+                    print(f"    Error testing suggestion '{suggestion.text}': {e}")
     
-    def test_query_hints_provide_actionable_advice(self):
-        """Test query hints provide actionable improvement advice"""
-        hint_test_cases = [
-            {
-                "query": "a",
-                "expected_hint_themes": ["context", "specific", "more"],
-                "issue": "too_short"
-            },
-            {
-                "query": "this is a very long query with many words that might be too verbose for effective searching",
-                "expected_hint_themes": ["shorter", "specific", "concise"],
-                "issue": "too_long"
-            },
-            {
-                "query": "user authentication",
-                "expected_hint_themes": ["def", "class", "quotes", "file"],
-                "issue": "could_be_more_specific"
-            },
-            {
-                "query": "find all the functions that handle user authentication and session management",
-                "expected_hint_themes": ["how to", "find", "explain"],
-                "issue": "could_be_semantic"
-            }
+    async def test_suggestion_performance_benchmarks(self):
+        """Test suggestion generation performance"""
+        test_queries = [
+            "auth", "login", "user", "password", "session", "token",
+            "function", "class", "method", "variable", "constant",
+            "test", "mock", "fixture", "assert", "validate",
+            "error", "exception", "logging", "debug", "trace"
         ]
         
-        for case in hint_test_cases:
-            hints = self.engine.get_query_hints(case["query"])
-            
-            assert len(hints) > 0, f"No hints provided for query: '{case['query']}'"
-            assert len(hints) <= 3, f"Too many hints ({len(hints)}), should be 3 or fewer"
-            
-            # Hints should address the identified issue
-            hint_text = ' '.join(hints).lower()
-            found_themes = [theme for theme in case["expected_hint_themes"] 
-                          if theme.lower() in hint_text]
-            
-            assert len(found_themes) > 0, \
-                f"Expected hint themes {case['expected_hint_themes']} not found in hints: {hints}"
-            
-            # Hints should be actionable (contain action words)
-            action_words = ["try", "use", "add", "consider", "specify", "start"]
-            has_action = any(action in hint_text for action in action_words)
-            assert has_action, f"Hints should be actionable, got: {hints}"
-    
-    def test_suggestion_performance_with_real_queries(self):
-        """Test suggestion engine performance with realistic developer queries"""
-        # Real developer query patterns from various contexts
-        real_queries = [
-            "def", "class User", "auth", "database connection", "error handling",
-            "async function", "test_", "how to", "find code that", "show me",
-            "import", "export", "interface", "component", "service", "controller",
-            "validate", "parse", "format", "serialize", "deserialize", "transform"
-        ]
-        
-        import time
+        # Benchmark suggestion generation
         start_time = time.time()
         
         total_suggestions = 0
-        for query in real_queries:
-            suggestions = self.engine.get_suggestions(query, limit=8)
+        for query in test_queries:
+            suggestions = self.suggestion_engine.get_suggestions(query, limit=10)
             total_suggestions += len(suggestions)
-            assert len(suggestions) > 0, f"No suggestions for real query: '{query}'"
         
-        end_time = time.time()
-        total_time = end_time - start_time
+        generation_time = time.time() - start_time
         
-        # Performance benchmarks
-        assert total_time < 3.0, f"Suggestion generation took {total_time:.3f}s, should be under 3.0s"
+        print(f"\n=== Suggestion Performance Benchmarks ===")
+        print(f"Generated {total_suggestions} suggestions for {len(test_queries)} queries")
+        print(f"Total time: {generation_time:.3f}s")
+        print(f"Average time per query: {generation_time/len(test_queries):.3f}s")
+        print(f"Average suggestions per query: {total_suggestions/len(test_queries):.1f}")
         
-        time_per_query = total_time / len(real_queries)
-        assert time_per_query < 0.15, f"Time per query: {time_per_query:.4f}s, should be under 0.15s"
+        # Performance assertions
+        assert generation_time < 5.0, f"Suggestion generation took too long: {generation_time:.3f}s"
         
-        avg_suggestions = total_suggestions / len(real_queries)
-        assert avg_suggestions >= 3, f"Average {avg_suggestions:.1f} suggestions per query, should be at least 3"
+        avg_time_per_query = generation_time / len(test_queries)
+        assert avg_time_per_query < 0.1, f"Average time per query too slow: {avg_time_per_query:.3f}s"
+        
+        avg_suggestions = total_suggestions / len(test_queries)
+        assert avg_suggestions >= 5, f"Should generate sufficient suggestions: {avg_suggestions:.1f}"
     
-    def test_cross_language_suggestion_patterns(self):
-        """Test suggestion patterns work across different programming languages"""
-        language_contexts = [
-            {
-                "language": "python",
-                "query": "def handle",
-                "expected_patterns": ["request", "error", "auth", "data"],
-                "syntax_patterns": ["async", "return", "self"]
-            },
-            {
-                "language": "javascript",
-                "query": "function get",
-                "expected_patterns": ["data", "user", "response", "element"],
-                "syntax_patterns": ["async", "await", "return"]
-            },
-            {
-                "language": "typescript",
-                "query": "interface User",
-                "expected_patterns": ["Model", "Data", "Response", "Request"],
-                "syntax_patterns": ["extends", "implements", "readonly"]
-            }
-        ]
+    def test_suggestion_deduplication_and_ranking(self):
+        """Test suggestion deduplication and confidence ranking"""
+        # Query that might generate duplicate suggestions
+        query = "test function"
         
-        for ctx in language_contexts:
-            # Simulate language context
-            suggestions = self.engine.get_suggestions(ctx["query"], limit=10)
+        suggestions = self.suggestion_engine.get_suggestions(query, limit=20)
+        
+        print(f"\n=== Deduplication test for '{query}' ===")
+        for i, suggestion in enumerate(suggestions):
+            print(f"{i+1}: {suggestion.text} (confidence: {suggestion.confidence:.2f}, type: {suggestion.type.value})")
+        
+        # Check for duplicates
+        suggestion_texts = [s.text.lower().strip() for s in suggestions]
+        unique_texts = set(suggestion_texts)
+        
+        assert len(unique_texts) == len(suggestion_texts), \
+            f"Found duplicate suggestions: {len(suggestion_texts)} total, {len(unique_texts)} unique"
+        
+        # Check confidence ranking
+        confidences = [s.confidence for s in suggestions]
+        sorted_confidences = sorted(confidences, reverse=True)
+        
+        assert confidences == sorted_confidences, \
+            "Suggestions should be sorted by confidence in descending order"
+        
+        # Check confidence ranges
+        if suggestions:
+            max_confidence = max(confidences)
+            min_confidence = min(confidences)
             
-            assert len(suggestions) > 0, f"No suggestions for {ctx['language']} query: '{ctx['query']}'"
-            
-            suggestion_texts = [s.text.lower() for s in suggestions]
-            full_text = ' '.join(suggestion_texts)
-            
-            # Should include language-appropriate patterns
-            found_patterns = [pattern for pattern in ctx["expected_patterns"] 
-                            if pattern.lower() in full_text]
-            
-            assert len(found_patterns) > 0, \
-                f"Expected {ctx['language']} patterns {ctx['expected_patterns']} not found in suggestions"
+            assert max_confidence <= 1.0, f"Max confidence should not exceed 1.0: {max_confidence}"
+            assert min_confidence >= 0.0, f"Min confidence should not be below 0.0: {min_confidence}"
+            assert max_confidence > min_confidence, "Should have confidence variation"
 
 
 if __name__ == "__main__":

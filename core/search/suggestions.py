@@ -163,58 +163,102 @@ class QuerySuggestionEngine:
         """Generate query completions based on patterns"""
         suggestions = []
         query_lower = partial_query.lower().strip()
+        words = query_lower.split()
         
-        # Function pattern completions
-        if any(pattern in query_lower for pattern in ["def", "function", "func", "method"]):
-            for pattern in self._function_patterns:
-                if "{query}" in pattern:
-                    completed = pattern.replace("{query}", partial_query)
-                    if completed != partial_query:
-                        suggestions.append(SearchSuggestion(
-                            text=completed,
-                            type=SuggestionType.COMPLETION,
-                            confidence=0.8,
-                            explanation="Function pattern completion"
-                        ))
+        # Always suggest function patterns for reasonable queries
+        # More flexible trigger conditions
+        should_suggest_functions = (
+            any(pattern in query_lower for pattern in ["def", "function", "func", "method"]) or
+            len(words) <= 3  # For short queries, suggest function patterns
+        )
         
-        # Class pattern completions
-        if any(pattern in query_lower for pattern in ["class", "interface", "type", "model"]):
-            for pattern in self._class_patterns:
-                if "{query}" in pattern:
-                    completed = pattern.replace("{query}", partial_query)
-                    if completed != partial_query:
-                        suggestions.append(SearchSuggestion(
-                            text=completed,
-                            type=SuggestionType.COMPLETION,
-                            confidence=0.8,
-                            explanation="Class pattern completion"
-                        ))
+        if should_suggest_functions:
+            # Select most relevant function patterns
+            selected_patterns = []
+            if "async" not in query_lower:
+                selected_patterns.append("async {query}")
+            if "def" not in query_lower:
+                selected_patterns.append("def {query}")
+            if "test" not in query_lower and len(words) <= 2:
+                selected_patterns.append("test {query}")
+            selected_patterns.extend(["{query} method", "{query} function"])
+            
+            for pattern in selected_patterns[:5]:  # Limit to avoid too many suggestions
+                completed = pattern.replace("{query}", partial_query)
+                if completed != partial_query:
+                    suggestions.append(SearchSuggestion(
+                        text=completed,
+                        type=SuggestionType.COMPLETION,
+                        confidence=0.8,
+                        explanation="Function pattern completion"
+                    ))
         
-        # File pattern completions
-        if any(pattern in query_lower for pattern in ["file", "path", "."]):
-            for pattern in self._file_patterns:
-                if "{query}" in pattern:
-                    completed = pattern.replace("{query}", partial_query)
-                    if completed != partial_query:
-                        suggestions.append(SearchSuggestion(
-                            text=completed,
-                            type=SuggestionType.COMPLETION,
-                            confidence=0.7,
-                            explanation="File pattern completion"
-                        ))
+        # Always suggest class patterns for reasonable queries
+        should_suggest_classes = (
+            any(pattern in query_lower for pattern in ["class", "interface", "type", "model"]) or
+            len(words) <= 3  # For short queries, suggest class patterns
+        )
         
-        # Semantic pattern completions
-        if any(pattern in query_lower for pattern in ["how", "what", "find", "show", "explain"]):
-            for pattern in self._semantic_patterns:
-                if "{query}" in pattern:
-                    completed = pattern.replace("{query}", partial_query)
-                    if completed != partial_query:
-                        suggestions.append(SearchSuggestion(
-                            text=completed,
-                            type=SuggestionType.COMPLETION,
-                            confidence=0.9,
-                            explanation="Semantic query completion"
-                        ))
+        if should_suggest_classes:
+            # Select most relevant class patterns
+            selected_patterns = []
+            if "class" not in query_lower:
+                selected_patterns.append("{query} class")
+            if "interface" not in query_lower:
+                selected_patterns.append("interface {query}")
+            selected_patterns.extend(["{query} model", "{query} service"])
+            
+            for pattern in selected_patterns[:4]:  # Limit to avoid too many suggestions
+                completed = pattern.replace("{query}", partial_query)
+                if completed != partial_query:
+                    suggestions.append(SearchSuggestion(
+                        text=completed,
+                        type=SuggestionType.COMPLETION,
+                        confidence=0.7,
+                        explanation="Class pattern completion"
+                    ))
+        
+        # File pattern completions - more flexible triggers
+        should_suggest_files = (
+            any(pattern in query_lower for pattern in ["file", "path", "."]) or
+            "." not in partial_query  # If no extension, suggest file patterns
+        )
+        
+        if should_suggest_files and len(words) <= 2:
+            # Select most common file patterns
+            selected_patterns = ["{query}.py", "{query}.js", "{query}.ts"]
+            for pattern in selected_patterns:
+                completed = pattern.replace("{query}", partial_query)
+                if completed != partial_query:
+                    suggestions.append(SearchSuggestion(
+                        text=completed,
+                        type=SuggestionType.COMPLETION,
+                        confidence=0.6,
+                        explanation="File pattern completion"
+                    ))
+        
+        # Semantic pattern completions - trigger more often
+        should_suggest_semantic = (
+            any(pattern in query_lower for pattern in ["how", "what", "find", "show", "explain"]) or
+            len(words) >= 2  # For multi-word queries, suggest semantic patterns
+        )
+        
+        if should_suggest_semantic:
+            # Select most relevant semantic patterns
+            selected_patterns = []
+            if not query_lower.startswith(("how", "what", "find", "show")):
+                selected_patterns.extend(["how to {query}", "find {query}", "show me {query}"])
+            selected_patterns.extend(["{query} examples", "{query} implementation"])
+            
+            for pattern in selected_patterns[:4]:  # Limit to avoid too many suggestions
+                completed = pattern.replace("{query}", partial_query)
+                if completed != partial_query:
+                    suggestions.append(SearchSuggestion(
+                        text=completed,
+                        type=SuggestionType.COMPLETION,
+                        confidence=0.9,
+                        explanation="Semantic query completion"
+                    ))
         
         return suggestions
     
@@ -337,7 +381,7 @@ class QuerySuggestionEngine:
         # Add recent queries if available
         recent_queries = context.get("recent_queries", [])
         for recent in recent_queries[:3]:
-            if partial_query.lower() in recent.lower() and recent != partial_query:
+            if self._is_query_related(partial_query, recent):
                 suggestions.append(SearchSuggestion(
                     text=recent,
                     type=SuggestionType.CONTEXT,
@@ -346,6 +390,78 @@ class QuerySuggestionEngine:
                 ))
         
         return suggestions
+    
+    def _simple_stem(self, word: str) -> str:
+        """Apply simple stemming by removing common suffixes"""
+        if len(word) <= 4:  # Don't stem very short words
+            return word
+            
+        # Common English suffixes for programming terms
+        suffixes = ['tion', 'ing', 'ed', 'er', 'ly', 'al', 'ive', 'ate', 'ize']
+        
+        for suffix in suffixes:
+            if word.endswith(suffix) and len(word) > len(suffix) + 2:
+                return word[:-len(suffix)]
+        
+        return word
+    
+    def _is_query_related(self, partial_query: str, recent_query: str) -> bool:
+        """Check if partial query is semantically related to recent query."""
+        # Constants
+        MIN_WORD_LENGTH = 3
+        MIN_STEM_LENGTH = 2
+        MIN_PREFIX_LENGTH = 4
+        
+        query_lower = partial_query.lower().strip()
+        recent_lower = recent_query.lower().strip()
+        
+        # Same query check
+        if query_lower == recent_lower:
+            return False
+        
+        # Fast bidirectional substring check
+        if query_lower in recent_lower or recent_lower in query_lower:
+            return True
+        
+        # Tokenize once
+        query_words = [w for w in query_lower.split() if len(w) >= MIN_WORD_LENGTH]
+        recent_words = [w for w in recent_lower.split() if len(w) >= MIN_WORD_LENGTH]
+        
+        # Early exit if no meaningful words
+        if not query_words or not recent_words:
+            return False
+        
+        # Create sets for O(1) lookups
+        recent_words_set = set(recent_words)
+        
+        # Combined word analysis
+        for q_word in query_words:
+            # Direct match
+            if q_word in recent_words_set:
+                return True
+            
+            # Check against each recent word for advanced matching
+            for r_word in recent_words:
+                # Bidirectional substring (avoid redundant checks)
+                if len(q_word) >= MIN_PREFIX_LENGTH:
+                    if q_word in r_word or r_word in q_word:
+                        return True
+                
+                # Prefix matching (combines old strategies 3 & 4)
+                if (len(q_word) >= MIN_PREFIX_LENGTH and 
+                    len(r_word) >= MIN_PREFIX_LENGTH):
+                    common_prefix = min(len(q_word), len(r_word), MIN_PREFIX_LENGTH)
+                    if q_word[:common_prefix] == r_word[:common_prefix]:
+                        return True
+                
+                # Stemming comparison
+                if len(q_word) > MIN_WORD_LENGTH and len(r_word) > MIN_WORD_LENGTH:
+                    q_stem = self._simple_stem(q_word)
+                    r_stem = self._simple_stem(r_word)
+                    if q_stem == r_stem and len(q_stem) > MIN_STEM_LENGTH:
+                        return True
+        
+        return False
     
     def _deduplicate_suggestions(self, suggestions: List[SearchSuggestion]) -> List[SearchSuggestion]:
         """Remove duplicate suggestions while preserving highest confidence"""
