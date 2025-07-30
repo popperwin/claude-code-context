@@ -109,7 +109,6 @@ class ResultRanker:
         # Apply file-based limiting
         limited_results = self._apply_file_limiting(diverse_results)
         
-        
         logger.debug(
             f"Ranked {len(results)} results -> {len(limited_results)} final results "
             f"using {self.config.strategy.value}"
@@ -117,9 +116,32 @@ class ResultRanker:
         
         return limited_results
     
+    def _create_result_with_rank(self, original: SearchResult, score: float, rank: int, total: int) -> SearchResult:
+        """Helper to create a new SearchResult with updated score and rank"""
+        return SearchResult(
+            point=original.point,
+            score=score,
+            query=original.query,
+            search_type=original.search_type,
+            rank=rank,
+            total_results=total,
+            relevance_score=getattr(original, 'relevance_score', None),
+            semantic_score=getattr(original, 'semantic_score', None),
+            keyword_score=getattr(original, 'keyword_score', None)
+        )
+    
     def _rank_by_score_only(self, results: List[SearchResult]) -> List[SearchResult]:
         """Rank results by search score only"""
-        return sorted(results, key=lambda r: r.score, reverse=True)
+        # Sort by score
+        sorted_results = sorted(results, key=lambda r: r.score, reverse=True)
+        
+        # Create new results with correct ranks
+        ranked_results = []
+        for rank, result in enumerate(sorted_results, 1):
+            new_result = self._create_result_with_rank(result, result.score, rank, len(sorted_results))
+            ranked_results.append(new_result)
+        
+        return ranked_results
     
     def _rank_with_freshness_boost(
         self,
@@ -129,7 +151,8 @@ class ResultRanker:
         """Rank results with freshness boost"""
         file_timestamps = context.get("file_timestamps", {})
         
-        scored_results = []
+        # Calculate scores with boost
+        scored_items = []
         for result in results:
             base_score = result.score
             file_path = result.point.payload.get("file_path", "")
@@ -141,18 +164,18 @@ class ResultRanker:
             else:
                 new_score = base_score
             
-            # Create new result with updated score
-            new_result = SearchResult(
-                point=result.point,
-                score=new_score,
-                query=result.query,
-                search_type=result.search_type,
-                rank=result.rank,
-                total_results=result.total_results
-            )
-            scored_results.append(new_result)
+            scored_items.append((new_score, result))
         
-        return sorted(scored_results, key=lambda r: r.score, reverse=True)
+        # Sort by score
+        scored_items.sort(key=lambda x: x[0], reverse=True)
+        
+        # Create results with correct ranks
+        ranked_results = []
+        for rank, (score, original) in enumerate(scored_items, 1):
+            new_result = self._create_result_with_rank(original, score, rank, len(scored_items))
+            ranked_results.append(new_result)
+        
+        return ranked_results
     
     def _rank_with_popularity_boost(
         self,
@@ -163,7 +186,8 @@ class ResultRanker:
         popular_entities = context.get("popular_entities", set())
         popular_files = context.get("popular_files", set())
         
-        scored_results = []
+        # Calculate scores with boost
+        scored_items = []
         for result in results:
             base_score = result.score
             boost_multiplier = 1.0
@@ -178,19 +202,18 @@ class ResultRanker:
                 boost_multiplier += self.config.popularity_weight * 0.3
             
             new_score = base_score * boost_multiplier
-            
-            # Create new result with updated score
-            new_result = SearchResult(
-                point=result.point,
-                score=new_score,
-                query=result.query,
-                search_type=result.search_type,
-                rank=result.rank,
-                total_results=result.total_results
-            )
-            scored_results.append(new_result)
+            scored_items.append((new_score, result))
         
-        return sorted(scored_results, key=lambda r: r.score, reverse=True)
+        # Sort by score
+        scored_items.sort(key=lambda x: x[0], reverse=True)
+        
+        # Create results with correct ranks
+        ranked_results = []
+        for rank, (score, original) in enumerate(scored_items, 1):
+            new_result = self._create_result_with_rank(original, score, rank, len(scored_items))
+            ranked_results.append(new_result)
+        
+        return ranked_results
     
     def _rank_with_quality_boost(
         self,
@@ -198,7 +221,8 @@ class ResultRanker:
         context: Dict[str, Any]
     ) -> List[SearchResult]:
         """Rank results with code quality signals"""
-        scored_results = []
+        # Calculate scores with boost
+        scored_items = []
         
         for result in results:
             base_score = result.score
@@ -241,19 +265,18 @@ class ResultRanker:
             
             # Apply multiplier to base score
             new_score = base_score * quality_multiplier
-            
-            # Create new result with updated score
-            new_result = SearchResult(
-                point=result.point,
-                score=new_score,
-                query=result.query,
-                search_type=result.search_type,
-                rank=result.rank,
-                total_results=result.total_results
-            )
-            scored_results.append(new_result)
+            scored_items.append((new_score, result))
         
-        return sorted(scored_results, key=lambda r: r.score, reverse=True)
+        # Sort by score
+        scored_items.sort(key=lambda x: x[0], reverse=True)
+        
+        # Create results with correct ranks
+        ranked_results = []
+        for rank, (score, original) in enumerate(scored_items, 1):
+            new_result = self._create_result_with_rank(original, score, rank, len(scored_items))
+            ranked_results.append(new_result)
+        
+        return ranked_results
     
     def _rank_hybrid(
         self,
@@ -262,7 +285,8 @@ class ResultRanker:
         context: Dict[str, Any]
     ) -> List[SearchResult]:
         """Advanced hybrid ranking with multiple signals"""
-        scored_results = []
+        # Calculate scores with all boosts
+        scored_items = []
         
         for result in results:
             base_score = result.score
@@ -317,19 +341,18 @@ class ResultRanker:
                     total_multiplier += 0.3 * match_ratio
             
             new_score = base_score * total_multiplier
-            
-            # Create new result with updated score
-            new_result = SearchResult(
-                point=result.point,
-                score=new_score,
-                query=result.query,
-                search_type=result.search_type,
-                rank=result.rank,
-                total_results=result.total_results
-            )
-            scored_results.append(new_result)
+            scored_items.append((new_score, result))
         
-        return sorted(scored_results, key=lambda r: r.score, reverse=True)
+        # Sort by score
+        scored_items.sort(key=lambda x: x[0], reverse=True)
+        
+        # Create results with correct ranks
+        ranked_results = []
+        for rank, (score, original) in enumerate(scored_items, 1):
+            new_result = self._create_result_with_rank(original, score, rank, len(scored_items))
+            ranked_results.append(new_result)
+        
+        return ranked_results
     
     def _apply_diversity_filtering(self, results: List[SearchResult]) -> List[SearchResult]:
         """Apply diversity filtering to avoid too similar results"""
@@ -358,7 +381,13 @@ class ResultRanker:
                 diverse_results.append(result)
                 seen_signatures.add(diversity_key)
         
-        return diverse_results
+        # Re-rank after filtering
+        final_results = []
+        for rank, result in enumerate(diverse_results, 1):
+            new_result = self._create_result_with_rank(result, result.score, rank, len(diverse_results))
+            final_results.append(new_result)
+        
+        return final_results
     
     def _apply_file_limiting(self, results: List[SearchResult]) -> List[SearchResult]:
         """Limit number of results per file to ensure diversity"""
@@ -376,7 +405,13 @@ class ResultRanker:
                 limited_results.append(result)
                 file_counts[file_path] = count + 1
         
-        return limited_results
+        # Re-rank after limiting
+        final_results = []
+        for rank, result in enumerate(limited_results, 1):
+            new_result = self._create_result_with_rank(result, result.score, rank, len(limited_results))
+            final_results.append(new_result)
+        
+        return final_results
     
     def _is_main_source_file(self, file_path: str) -> bool:
         """Check if file is in main source directories (not test/example)"""
@@ -450,26 +485,27 @@ class ResultRanker:
                 if entity_id not in all_results:
                     all_results[entity_id] = result
         
-        # Create fused results with combined scores
+        # Sort entity scores
+        sorted_entities = sorted(entity_scores.items(), key=lambda x: x[1], reverse=True)
+        
+        # Create fused results with correct ranks
         fused_results = []
-        for entity_id, combined_score in entity_scores.items():
+        for rank, (entity_id, combined_score) in enumerate(sorted_entities, 1):
             if entity_id in all_results:
                 result = all_results[entity_id]
-                # Create new result with fused score
+                # Create new result with fused score and correct rank
                 fused_result = SearchResult(
                     point=result.point,
                     score=combined_score,
                     query=result.query,
                     search_type="fused",
-                    rank=0,  # Will be updated after sorting
-                    total_results=len(entity_scores)
+                    rank=rank,
+                    total_results=len(sorted_entities),
+                    relevance_score=getattr(result, 'relevance_score', None),
+                    semantic_score=getattr(result, 'semantic_score', None),
+                    keyword_score=getattr(result, 'keyword_score', None)
                 )
                 fused_results.append(fused_result)
-        
-        # Sort by combined score and update ranks
-        fused_results.sort(key=lambda r: r.score, reverse=True)
-        for i, result in enumerate(fused_results):
-            result.rank = i + 1
         
         logger.debug(
             f"Fused {len(payload_results)} payload + {len(semantic_results)} semantic "
