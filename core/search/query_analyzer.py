@@ -75,6 +75,26 @@ class QueryAnalyzer:
         
         logger.info("Initialized QueryAnalyzer")
     
+    def get_query_suggestions(self, partial_query: str, limit: int = 10) -> List[str]:
+        """
+        Get query suggestions using the QuerySuggestionEngine.
+        
+        Args:
+            partial_query: Partial search query
+            limit: Maximum number of suggestions
+            
+        Returns:
+            List of suggestion strings
+        """
+        # Import here to avoid circular imports
+        from .suggestions import QuerySuggestionEngine
+        
+        if not hasattr(self, '_suggestion_engine'):
+            self._suggestion_engine = QuerySuggestionEngine()
+        
+        suggestions = self._suggestion_engine.get_suggestions(partial_query, limit=limit)
+        return [s.text for s in suggestions]
+    
     def analyze_query(self, query: str) -> QueryAnalysis:
         """
         Perform comprehensive query analysis.
