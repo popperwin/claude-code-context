@@ -49,29 +49,25 @@ class TestEntityLifecycleIntegrationRealLife:
         
         # Clone smaller, focused repositories for entity testing
         cls.repos = {
-            "python-project": {
-                "url": "https://github.com/pallets/click.git",
-                "path": cls.test_dir / "click",
-                "branch": "main",
-                "language": "python"
+            "python": {
+                "url": "https://github.com/python-validators/validators.git",  # ~2k lignes
+                "path": cls.test_dir / "validators",
+                "branch": "master"
             },
-            "typescript-project": {
-                "url": "https://github.com/sindresorhus/is.git", 
-                "path": cls.test_dir / "is",
-                "branch": "main",
-                "language": "typescript"
+            "typescript": {
+                "url": "https://github.com/vercel/ms.git",  # ~200 lignes
+                "path": cls.test_dir / "ms",
+                "branch": "main"
             },
-            "javascript-project": {
-                "url": "https://github.com/jonschlinkert/is-number.git",
-                "path": cls.test_dir / "is-number",
-                "branch": "master", 
-                "language": "javascript"
+            "javascript": {
+                "url": "https://github.com/JedWatson/classnames.git",  # ~300 lignes
+                "path": cls.test_dir / "classnames",
+                "branch": "main"
             },
-            "go-project": {
-                "url": "https://github.com/gin-gonic/gin.git",
-                "path": cls.test_dir / "gin",
-                "branch": "master",
-                "language": "go"
+            "go": {
+                "url": "https://github.com/google/uuid.git",  # ~2k lignes
+                "path": cls.test_dir / "uuid",
+                "branch": "master"
             }
         }
         
@@ -277,7 +273,7 @@ class TestEntityLifecycleIntegrationRealLife:
     @pytest.mark.asyncio
     async def test_bulk_entity_creation_python_repo(self):
         """Test bulk entity creation with real Python repository"""
-        integrator = await self.create_integrator_for_repo("python-project")
+        integrator = await self.create_integrator_for_repo("python")
         
         # Create some test Python files
         test_files = []
@@ -306,7 +302,7 @@ GLOBAL_CONFIG = {
     "debug": True
 }
 '''
-        test_file = self.create_test_file("python-project", "test_entity_creation.py", python_content)
+        test_file = self.create_test_file("python", "test_entity_creation.py", python_content)
         test_files.append(test_file)
         
         # Create another Python file with classes
@@ -329,7 +325,7 @@ class UserManager:
         """Perform an async operation."""
         return ["result1", "result2"]
 '''
-        test_file2 = self.create_test_file("python-project", "test_user_manager.py", class_content)
+        test_file2 = self.create_test_file("python", "test_user_manager.py", class_content)
         test_files.append(test_file2)
         
         # Test bulk entity creation
@@ -368,7 +364,7 @@ class UserManager:
     @pytest.mark.asyncio
     async def test_entity_modification_and_sync_javascript_repo(self):
         """Test entity modification and synchronization with real JavaScript repository"""
-        integrator = await self.create_integrator_for_repo("javascript-project")
+        integrator = await self.create_integrator_for_repo("javascript")
         
         # Create initial JavaScript file
         initial_content = '''
@@ -406,7 +402,7 @@ const DEFAULT_CONFIG = {
     locale: 'en-US'
 };
 '''
-        test_file = self.create_test_file("javascript-project", "shopping_cart.js", initial_content)
+        test_file = self.create_test_file("javascript", "shopping_cart.js", initial_content)
         
         # Initial entity creation
         create_result = await integrator.bulk_entity_create([test_file])
@@ -529,7 +525,7 @@ const DISCOUNT_CODES = {
     @pytest.mark.asyncio 
     async def test_file_deletion_and_cascade_operations_go_repo(self):
         """Test file deletion with cascade operations using real Go repository"""
-        integrator = await self.create_integrator_for_repo("go-project")
+        integrator = await self.create_integrator_for_repo("go")
         
         # Create Go files with dependencies
         main_content = '''
@@ -616,8 +612,8 @@ var GlobalConfig = map[string]interface{}{
 }
 '''
         
-        main_file = self.create_test_file("go-project", "test_server.go", main_content)
-        handlers_file = self.create_test_file("go-project", "test_handlers.go", handlers_content)
+        main_file = self.create_test_file("go", "test_server.go", main_content)
+        handlers_file = self.create_test_file("go", "test_handlers.go", handlers_content)
         
         # Create entities initially
         create_result = await integrator.bulk_entity_create([main_file, handlers_file])
@@ -668,7 +664,7 @@ var GlobalConfig = map[string]interface{}{
     @pytest.mark.asyncio
     async def test_atomic_entity_replacement_typescript_repo(self):
         """Test atomic entity replacement with real TypeScript repository"""
-        integrator = await self.create_integrator_for_repo("typescript-project")
+        integrator = await self.create_integrator_for_repo("typescript")
         
         # Create initial TypeScript file
         initial_content = '''
@@ -718,7 +714,7 @@ export const DEFAULT_USER: User = {
 export { UserService, User, Product };
 '''
         
-        test_file = self.create_test_file("typescript-project", "user_service.ts", initial_content)
+        test_file = self.create_test_file("typescript", "user_service.ts", initial_content)
         
         # Create initial entities
         create_result = await integrator.bulk_entity_create([test_file])
@@ -880,7 +876,7 @@ export { CustomerService, OrderService, Customer, Order, Address };
     @pytest.mark.asyncio
     async def test_real_time_sync_integration(self):
         """Test real-time synchronization integration"""
-        integrator = await self.create_integrator_for_repo("python-project")
+        integrator = await self.create_integrator_for_repo("python")
         
         # Enable real-time sync
         sync_enabled = await integrator.enable_sync()
@@ -907,7 +903,7 @@ class RealtimeClass:
         return "method two"
 '''
         
-        test_file = self.create_test_file("python-project", "realtime_test.py", realtime_content)
+        test_file = self.create_test_file("python", "realtime_test.py", realtime_content)
         
         # Give a moment for any real-time processing
         import asyncio
@@ -937,7 +933,7 @@ class RealtimeClass:
     @pytest.mark.asyncio
     async def test_entity_mapping_rebuild_and_health(self):
         """Test entity mapping rebuild and health monitoring"""
-        integrator = await self.create_integrator_for_repo("javascript-project")
+        integrator = await self.create_integrator_for_repo("javascript")
         
         # Create some entities first
         test_content = '''
@@ -958,7 +954,7 @@ class TestClass {
 const TEST_CONSTANT = "test value";
 '''
         
-        test_file = self.create_test_file("javascript-project", "mapping_test.js", test_content)
+        test_file = self.create_test_file("javascript", "mapping_test.js", test_content)
         
         # Create entities  
         create_result = await integrator.bulk_entity_create([test_file])
@@ -1001,7 +997,7 @@ const TEST_CONSTANT = "test value";
         """Test entity operations across multiple programming languages"""
         
         # Test with multiple languages
-        languages = ["python-project", "javascript-project"]
+        languages = ["python", "javascript"]
         integrators = {}
         
         # Create integrators for each language
@@ -1019,7 +1015,7 @@ const TEST_CONSTANT = "test value";
         test_files = {}
         
         # Python file
-        if "python-project" in integrators:
+        if "python" in integrators:
             python_content = '''
 def cross_lang_python_function(data):
     """Process data in Python."""
@@ -1029,10 +1025,10 @@ class PythonProcessor:
     def process(self, items):
         return [item.upper() for item in items]
 '''
-            test_files["python-project"] = self.create_test_file("python-project", "cross_lang_test.py", python_content)
+            test_files["python"] = self.create_test_file("python", "cross_lang_test.py", python_content)
         
         # JavaScript file
-        if "javascript-project" in integrators:
+        if "javascript" in integrators:
             js_content = '''
 /**
  * Process data in JavaScript
@@ -1054,7 +1050,7 @@ const JS_CONFIG = {
     enabled: true
 };
 '''
-            test_files["javascript-project"] = self.create_test_file("javascript-project", "cross_lang_test.js", js_content)
+            test_files["javascript"] = self.create_test_file("javascript", "cross_lang_test.js", js_content)
         
         # Create multiple test files for each language to get 100+ entities for realistic performance testing
         for lang in integrators.keys():
@@ -1062,7 +1058,7 @@ const JS_CONFIG = {
                 # Create 20 additional files for this language to get more entities
                 additional_files = []
                 for i in range(20):
-                    if lang == "python-project":
+                    if lang == "python":
                         content = f'''
 def function_{i}():
     """Function {i} for performance testing."""
@@ -1086,7 +1082,7 @@ class UtilityClass{i}:
 CONSTANT_{i} = {i * 100}
 CONFIG_{i} = {{"enabled": True, "value": {i}}}
 '''
-                    else:  # javascript-project
+                    else:  # javascript
                         content = f'''
 function testFunction{i}() {{
     // Function {i} for performance testing
@@ -1132,7 +1128,7 @@ const UTILS_{i} = {{
 }};
 '''
                     
-                    additional_files.append(self.create_test_file(lang, f"perf_test_{i}.{'py' if lang == 'python-project' else 'js'}", content))
+                    additional_files.append(self.create_test_file(lang, f"perf_test_{i}.{'py' if lang == 'python' else 'js'}", content))
                 
                 # Add the additional files to test_files
                 if isinstance(test_files[lang], list):

@@ -10,6 +10,7 @@ import logging
 import time
 from typing import List, Dict, Any, Optional, Union, Tuple
 from pathlib import Path
+import numpy as np
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -76,6 +77,10 @@ class HybridQdrantClient:
         self.api_key = api_key
         self.timeout = timeout
         self.embedder = embedder
+        if embedder is None:
+            logger.warning("No embedder configured for semantic search. "
+                "HybridQdrantClient requires an embedder for semantic search operations. "
+                "Please configure an embedder when creating the client.")
         
         # Search configuration
         self.default_payload_weight = default_payload_weight
@@ -484,6 +489,10 @@ class HybridQdrantClient:
             List of search results
         """
         if not self.embedder:
+            logger.error("No embedder configured for semantic search. "
+                "HybridQdrantClient requires an embedder for semantic search operations. "
+                "Please configure an embedder when creating the client.")
+            
             raise ValueError(
                 "No embedder configured for semantic search. "
                 "HybridQdrantClient requires an embedder for semantic search operations. "
@@ -511,7 +520,7 @@ class HybridQdrantClient:
                 with_payload=True,
                 with_vectors=False
             )
-            
+
             # Convert results
             results = []
             for i, scored_point in enumerate(search_results):
@@ -590,7 +599,7 @@ class HybridQdrantClient:
             payload_results, semantic_results = await asyncio.gather(
                 payload_task, semantic_task, return_exceptions=True
             )
-            
+
             # Handle exceptions
             if isinstance(payload_results, Exception):
                 logger.warning(f"Payload search failed: {payload_results}")

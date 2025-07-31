@@ -13,6 +13,10 @@ import uuid
 import time
 from typing import List, Dict, Any, Optional
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 # Fix tokenizer fork warnings
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -40,24 +44,9 @@ class TestQuerySuggestionEngineQuality:
         # Clone smaller, manageable real repositories for testing
         cls.repos = {
             "python": {
-                "url": "https://github.com/kennethreitz/requests.git",
+                "url": "https://github.com/python-validators/validators.git",
                 "path": cls.test_dir / "requests",
                 "branch": "main"
-            },
-            "typescript": {
-                "url": "https://github.com/sindresorhus/got.git",
-                "path": cls.test_dir / "got",
-                "branch": "main"
-            },
-            "javascript": {
-                "url": "https://github.com/axios/axios.git",
-                "path": cls.test_dir / "axios", 
-                "branch": "main"
-            },
-            "go": {
-                "url": "https://github.com/gin-gonic/gin.git",
-                "path": cls.test_dir / "gin",
-                "branch": "master"
             }
         }
         
@@ -94,7 +83,9 @@ class TestQuerySuggestionEngineQuality:
     def setup_method(self):
         """Setup test instance"""
         self.suggestion_engine = QuerySuggestionEngine()
-        self.client = HybridQdrantClient("http://localhost:6334")
+
+        # TODO: Maybe we should ALWAYS add direct embedder to avoid forgetting?
+        self.client = HybridQdrantClient("http://localhost:6334")  
         self.searcher = None
         
         # Initialize components for HybridIndexer (will be done in async setup)
@@ -111,6 +102,13 @@ class TestQuerySuggestionEngineQuality:
         if self.indexer is None:
             self.parser_pipeline = ProcessParsingPipeline(max_workers=2, batch_size=5)
             self.embedder = StellaEmbedder()
+
+            # Pre-load the Stella model to exclude loading time from performance measurements
+            await self.embedder.load_model()
+            
+            # Create new client with embedder - the old client was missing embedder
+            self.client = HybridQdrantClient("http://localhost:6334", embedder=self.embedder)
+            
             self.cache_manager = CacheManager()
             self.indexer = HybridIndexer(
                 parser_pipeline=self.parser_pipeline,
@@ -146,21 +144,28 @@ class TestQuerySuggestionEngineQuality:
     
     async def get_or_create_collection(self, repo_name: str) -> str:
         """Get existing collection for repo or create it if needed"""
-        # Deterministic collection name based on repo
-        collection_name = f"test-suggestion-{repo_name}"
-        
-        # Check if collection already exists
-        try:
-            collection_info = await self.client.get_collection_info(collection_name)
-            if collection_info:
-                # Collection exists and is valid, reuse it
-                self.__class__.shared_collections.add(collection_name)
-                return collection_name
-        except Exception:
-            pass  # Collection doesn't exist, create it
-        
-        # Setup async components if not already done
+        # Setup async components first  
         await self._async_setup()
+        
+        # Use CollectionManager to get the proper collection name format
+        base_project_name = f"test-suggestion-{repo_name}"
+        from core.storage.schemas import CollectionManager, CollectionType
+        collection_manager = CollectionManager(project_name=base_project_name)
+        actual_collection_name = collection_manager.get_collection_name(CollectionType.CODE)
+        
+        logger.debug(f"Looking for collection: {actual_collection_name}")
+        
+        # Check if collection already exists with sufficient entities
+        try:
+            collection_info = await self.client.get_collection_info(actual_collection_name)
+            if collection_info and collection_info.get("points_count", 0) > 10:
+                # Collection exists and has entities, reuse it
+                self.__class__.shared_collections.add(actual_collection_name)
+                print(f"✅ REUSING existing collection: {actual_collection_name} ({collection_info.get('points_count', 0)} entities)")
+                return actual_collection_name
+        except Exception as e:
+            logger.debug(f"Collection {actual_collection_name} doesn't exist: {e}")
+            pass  # Collection doesn't exist, create it
         
         repo_info = self.repos[repo_name]
         repo_path = repo_info["path"]
@@ -168,20 +173,27 @@ class TestQuerySuggestionEngineQuality:
         if not repo_path.exists():
             raise pytest.skip(f"Repository {repo_name} not available")
         
-        # Create and index new collection
+        # Create and index new collection using consistent naming
+        print(f"🔄 CREATING new collection: {actual_collection_name}")
+        
         config = IndexingJobConfig(
             project_path=repo_path,
-            project_name=collection_name,  # Use collection name as project name
+            project_name=base_project_name,  # Use base name, CollectionManager handles suffix
             include_patterns=["*.py", "*.js", "*.ts", "*.go", "*.rs"],
-            batch_size=50
+            exclude_patterns=["**/node_modules/**", "**/target/**", "**/.git/**", "**/build/**"],
+            batch_size=50,
+            # Use entity-level configuration
+            entity_scan_mode="full_rescan",
+            enable_entity_monitoring=True,
+            entity_batch_size=50
         )
         
         await self.indexer.index_project(config)
         
-        # Get the actual collection name
-        from core.storage.schemas import CollectionManager, CollectionType
-        collection_manager = CollectionManager(project_name=config.project_name)
-        actual_collection_name = collection_manager.get_collection_name(CollectionType.CODE)
+        # Verify entities were created
+        collection_info = await self.client.get_collection_info(actual_collection_name)
+        entity_count = collection_info.get("points_count", 0) if collection_info else 0
+        print(f"✅ CREATED collection {actual_collection_name} with {entity_count} entities")
         
         # Track for cleanup
         self.__class__.shared_collections.add(actual_collection_name)
@@ -210,7 +222,7 @@ class TestQuerySuggestionEngineQuality:
             return results
             
         except Exception as e:
-            print(f"Error searching {repo_name}: {e}")
+            logger.debug(f"Error searching {repo_name}: {e}")
             return []
     
     def test_basic_suggestion_generation(self):
@@ -241,10 +253,10 @@ class TestQuerySuggestionEngineQuality:
         for case in test_cases:
             suggestions = self.suggestion_engine.get_suggestions(case["query"], limit=15)
             
-            print(f"\n=== Testing query: '{case['query']}' ===")
+            logger.debug(f"\n=== Testing query: '{case['query']}' ===")
             for i, suggestion in enumerate(suggestions):
-                print(f"{i+1}: [{suggestion.type.value}] {suggestion.text} (conf: {suggestion.confidence:.2f})")
-                print(f"    {suggestion.explanation}")
+                logger.debug(f"{i+1}: [{suggestion.type.value}] {suggestion.text} (conf: {suggestion.confidence:.2f})")
+                logger.debug(f"    {suggestion.explanation}")
             
             # Verify we have enough suggestions
             assert len(suggestions) >= case["min_suggestions"], \
@@ -276,10 +288,10 @@ class TestQuerySuggestionEngineQuality:
         # Find function-related suggestions
         function_suggestions = [s for s in suggestions if "def" in s.text or "function" in s.text or "method" in s.text]
         
-        print(f"\n=== Function suggestions for '{base_query}' ===")
+        logger.debug(f"\n=== Function suggestions for '{base_query}' ===")
         for suggestion in function_suggestions:
-            print(f"[{suggestion.type.value}] {suggestion.text} (confidence: {suggestion.confidence:.2f})")
-            print(f"  Explanation: {suggestion.explanation}")
+            logger.debug(f"[{suggestion.type.value}] {suggestion.text} (confidence: {suggestion.confidence:.2f})")
+            logger.debug(f"  Explanation: {suggestion.explanation}")
         
         assert len(function_suggestions) >= 2, "Should generate function pattern suggestions"
         
@@ -291,8 +303,8 @@ class TestQuerySuggestionEngineQuality:
             suggested_query = function_suggestions[0].text
             python_results_suggested = await self.search_with_query("python", suggested_query, limit=10)
             
-            print(f"\nBase query '{base_query}' found {len(python_results_base)} results")
-            print(f"Suggested query '{suggested_query}' found {len(python_results_suggested)} results")
+            logger.debug(f"\nBase query '{base_query}' found {len(python_results_base)} results")
+            logger.debug(f"Suggested query '{suggested_query}' found {len(python_results_suggested)} results")
             
             # Analyze result quality
             if python_results_suggested:
@@ -300,7 +312,7 @@ class TestQuerySuggestionEngineQuality:
                                   if r.point.payload.get("entity_type") in ["function", "method"]]
                 function_ratio = len(function_results) / len(python_results_suggested)
                 
-                print(f"Function/method results in suggested query: {len(function_results)}/{len(python_results_suggested)} ({function_ratio:.1%})")
+                logger.debug(f"Function/method results in suggested query: {len(function_results)}/{len(python_results_suggested)} ({function_ratio:.1%})")
                 
                 # Suggested query should have higher proportion of function results
                 if len(python_results_base) > 0:
@@ -308,7 +320,7 @@ class TestQuerySuggestionEngineQuality:
                                            if r.point.payload.get("entity_type") in ["function", "method"]]
                     base_function_ratio = len(base_function_results) / len(python_results_base)
                     
-                    print(f"Function/method results in base query: {len(base_function_results)}/{len(python_results_base)} ({base_function_ratio:.1%})")
+                    logger.debug(f"Function/method results in base query: {len(base_function_results)}/{len(python_results_base)} ({base_function_ratio:.1%})")
                     
                     assert function_ratio >= base_function_ratio, \
                         "Function pattern suggestion should improve function result ratio"
@@ -323,10 +335,10 @@ class TestQuerySuggestionEngineQuality:
         # Find class-related suggestions
         class_suggestions = [s for s in suggestions if "class" in s.text or "interface" in s.text or "model" in s.text]
         
-        print(f"\n=== Class suggestions for '{base_query}' ===")
+        logger.debug(f"\n=== Class suggestions for '{base_query}' ===")
         for suggestion in class_suggestions:
-            print(f"[{suggestion.type.value}] {suggestion.text} (confidence: {suggestion.confidence:.2f})")
-            print(f"  Explanation: {suggestion.explanation}")
+            logger.debug(f"[{suggestion.type.value}] {suggestion.text} (confidence: {suggestion.confidence:.2f})")
+            logger.debug(f"  Explanation: {suggestion.explanation}")
         
         if class_suggestions:
             # Test with real codebase
@@ -334,8 +346,8 @@ class TestQuerySuggestionEngineQuality:
             suggested_query = class_suggestions[0].text
             python_results_suggested = await self.search_with_query("python", suggested_query, limit=10)
             
-            print(f"\nBase query '{base_query}' found {len(python_results_base)} results")
-            print(f"Suggested query '{suggested_query}' found {len(python_results_suggested)} results")
+            logger.debug(f"\nBase query '{base_query}' found {len(python_results_base)} results")
+            logger.debug(f"Suggested query '{suggested_query}' found {len(python_results_suggested)} results")
             
             # Analyze result quality for class-related entities
             if python_results_suggested:
@@ -343,7 +355,7 @@ class TestQuerySuggestionEngineQuality:
                                if r.point.payload.get("entity_type") in ["class", "interface", "type"]]
                 class_ratio = len(class_results) / len(python_results_suggested) if python_results_suggested else 0
                 
-                print(f"Class/interface results in suggested query: {len(class_results)}/{len(python_results_suggested)} ({class_ratio:.1%})")
+                logger.debug(f"Class/interface results in suggested query: {len(class_results)}/{len(python_results_suggested)} ({class_ratio:.1%})")
                 
                 # Should find some class-related results
                 assert class_ratio > 0.1 or len(class_results) >= 1, \
@@ -366,16 +378,16 @@ class TestQuerySuggestionEngineQuality:
                                   if any(pattern in s.text.lower() 
                                         for pattern in ["how to", "what is", "find", "show me", "explain"])]
             
-            print(f"\n=== Semantic suggestions for '{base_query}' ===")
+            logger.debug(f"\n=== Semantic suggestions for '{base_query}' ===")
             for suggestion in semantic_suggestions:
-                print(f"[{suggestion.type.value}] {suggestion.text} (confidence: {suggestion.confidence:.2f})")
+                logger.debug(f"[{suggestion.type.value}] {suggestion.text} (confidence: {suggestion.confidence:.2f})")
             
             if semantic_suggestions:
                 # Test one semantic suggestion with real search
                 semantic_query = semantic_suggestions[0].text
                 results = await self.search_with_query("python", semantic_query, limit=8)
                 
-                print(f"Semantic query '{semantic_query}' found {len(results)} results")
+                logger.debug(f"Semantic query '{semantic_query}' found {len(results)} results")
                 
                 # Semantic queries should still find relevant results
                 if len(results) > 0:
@@ -392,7 +404,7 @@ class TestQuerySuggestionEngineQuality:
                             relevant_results.append(result)
                     
                     relevance_ratio = len(relevant_results) / len(results)
-                    print(f"Relevant results: {len(relevant_results)}/{len(results)} ({relevance_ratio:.1%})")
+                    logger.debug(f"Relevant results: {len(relevant_results)}/{len(results)} ({relevance_ratio:.1%})")
                     
                     # At least some results should be relevant
                     assert relevance_ratio >= 0.3, \
@@ -409,9 +421,9 @@ class TestQuerySuggestionEngineQuality:
         file_suggestions = [s for s in suggestions 
                           if any(ext in s.text for ext in [".py", ".js", ".ts", ".go"])]
         
-        print(f"\n=== File type suggestions for '{base_query}' ===")
+        logger.debug(f"\n=== File type suggestions for '{base_query}' ===")
         for suggestion in file_suggestions:
-            print(f"[{suggestion.type.value}] {suggestion.text} (confidence: {suggestion.confidence:.2f})")
+            logger.debug(f"[{suggestion.type.value}] {suggestion.text} (confidence: {suggestion.confidence:.2f})")
         
         if file_suggestions:
             # Test Python file suggestion
@@ -419,14 +431,14 @@ class TestQuerySuggestionEngineQuality:
             if py_suggestion:
                 results = await self.search_with_query("python", py_suggestion.text, limit=10)
                 
-                print(f"Python file suggestion '{py_suggestion.text}' found {len(results)} results")
+                logger.debug(f"Python file suggestion '{py_suggestion.text}' found {len(results)} results")
                 
                 # Check that results are from Python files
                 if results:
                     python_files = [r for r in results if r.point.payload.get("file_path", "").endswith(".py")]
                     python_ratio = len(python_files) / len(results)
                     
-                    print(f"Python files in results: {len(python_files)}/{len(results)} ({python_ratio:.1%})")
+                    logger.debug(f"Python files in results: {len(python_files)}/{len(results)} ({python_ratio:.1%})")
                     
                     # Should heavily favor Python files
                     assert python_ratio >= 0.7, \
@@ -446,12 +458,12 @@ class TestQuerySuggestionEngineQuality:
         for i, context in enumerate(contexts):
             suggestions = self.suggestion_engine.get_suggestions(base_query, limit=15, context=context)
             
-            print(f"\n=== Context {i+1} suggestions for '{base_query}' ===")
-            print(f"Context: {context}")
+            logger.debug(f"\n=== Context {i+1} suggestions for '{base_query}' ===")
+            logger.debug(f"Context: {context}")
             
             context_suggestions = [s for s in suggestions if s.type == SuggestionType.CONTEXT]
             for suggestion in context_suggestions:
-                print(f"[{suggestion.type.value}] {suggestion.text} (confidence: {suggestion.confidence:.2f})")
+                logger.debug(f"[{suggestion.type.value}] {suggestion.text} (confidence: {suggestion.confidence:.2f})")
             
             # Should generate context-aware suggestions
             assert len(context_suggestions) >= 1, \
@@ -495,10 +507,10 @@ class TestQuerySuggestionEngineQuality:
         for case in test_cases:
             hints = self.suggestion_engine.get_query_hints(case["query"])
             
-            print(f"\n=== Hints for '{case['query']}' ===")
-            print(f"Description: {case['description']}")
+            logger.debug(f"\n=== Hints for '{case['query']}' ===")
+            logger.debug(f"Description: {case['description']}")
             for hint in hints:
-                print(f"  • {hint}")
+                logger.debug(f"  • {hint}")
             
             # Should provide helpful hints
             assert len(hints) >= 1, f"Should provide hints for query '{case['query']}'"
@@ -519,7 +531,7 @@ class TestQuerySuggestionEngineQuality:
         for query in cross_language_queries:
             suggestions = self.suggestion_engine.get_suggestions(query, limit=12)
             
-            print(f"\n=== Cross-language suggestions for '{query}' ===")
+            logger.debug(f"\n=== Cross-language suggestions for '{query}' ===")
             
             # Group suggestions by type
             by_type = {}
@@ -529,9 +541,9 @@ class TestQuerySuggestionEngineQuality:
                 by_type[suggestion.type].append(suggestion)
             
             for suggestion_type, type_suggestions in by_type.items():
-                print(f"\n{suggestion_type.value.upper()} suggestions:")
+                logger.debug(f"\n{suggestion_type.value.upper()} suggestions:")
                 for suggestion in type_suggestions:
-                    print(f"  {suggestion.text} (confidence: {suggestion.confidence:.2f})")
+                    logger.debug(f"  {suggestion.text} (confidence: {suggestion.confidence:.2f})")
             
             # Should have diverse suggestion types
             assert len(by_type) >= 2, f"Should have diverse suggestion types for '{query}'"
@@ -547,14 +559,14 @@ class TestQuerySuggestionEngineQuality:
             for suggestion in suggestions[:3]:  # Test top 3 suggestions
                 try:
                     results = await self.search_with_query("python", suggestion.text, limit=5)
-                    print(f"  Suggestion '{suggestion.text}' found {len(results)} results")
+                    logger.debug(f"  Suggestion '{suggestion.text}' found {len(results)} results")
                     
                     # Suggestions should generally find some results
                     if len(results) == 0:
-                        print(f"    Warning: No results for suggestion '{suggestion.text}'")
+                        logger.debug(f"    Warning: No results for suggestion '{suggestion.text}'")
                     
                 except Exception as e:
-                    print(f"    Error testing suggestion '{suggestion.text}': {e}")
+                    logger.debug(f"    Error testing suggestion '{suggestion.text}': {e}")
     
     async def test_suggestion_performance_benchmarks(self):
         """Test suggestion generation performance"""
@@ -575,11 +587,11 @@ class TestQuerySuggestionEngineQuality:
         
         generation_time = time.time() - start_time
         
-        print(f"\n=== Suggestion Performance Benchmarks ===")
-        print(f"Generated {total_suggestions} suggestions for {len(test_queries)} queries")
-        print(f"Total time: {generation_time:.3f}s")
-        print(f"Average time per query: {generation_time/len(test_queries):.3f}s")
-        print(f"Average suggestions per query: {total_suggestions/len(test_queries):.1f}")
+        logger.debug(f"\n=== Suggestion Performance Benchmarks ===")
+        logger.debug(f"Generated {total_suggestions} suggestions for {len(test_queries)} queries")
+        logger.debug(f"Total time: {generation_time:.3f}s")
+        logger.debug(f"Average time per query: {generation_time/len(test_queries):.3f}s")
+        logger.debug(f"Average suggestions per query: {total_suggestions/len(test_queries):.1f}")
         
         # Performance assertions
         assert generation_time < 5.0, f"Suggestion generation took too long: {generation_time:.3f}s"
@@ -597,9 +609,9 @@ class TestQuerySuggestionEngineQuality:
         
         suggestions = self.suggestion_engine.get_suggestions(query, limit=20)
         
-        print(f"\n=== Deduplication test for '{query}' ===")
+        logger.debug(f"\n=== Deduplication test for '{query}' ===")
         for i, suggestion in enumerate(suggestions):
-            print(f"{i+1}: {suggestion.text} (confidence: {suggestion.confidence:.2f}, type: {suggestion.type.value})")
+            logger.debug(f"{i+1}: {suggestion.text} (confidence: {suggestion.confidence:.2f}, type: {suggestion.type.value})")
         
         # Check for duplicates
         suggestion_texts = [s.text.lower().strip() for s in suggestions]

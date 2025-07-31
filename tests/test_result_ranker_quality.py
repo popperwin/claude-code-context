@@ -39,23 +39,23 @@ class TestResultRankerQuality:
         # Clone smaller, manageable real repositories for testing
         cls.repos = {
             "python": {
-                "url": "https://github.com/kennethreitz/requests.git",
-                "path": cls.test_dir / "requests",
-                "branch": "main"
+                "url": "https://github.com/python-validators/validators.git",  # ~2k lignes
+                "path": cls.test_dir / "validators",
+                "branch": "master"
             },
             "typescript": {
-                "url": "https://github.com/sindresorhus/got.git",
-                "path": cls.test_dir / "got",
+                "url": "https://github.com/vercel/ms.git",  # ~200 lignes
+                "path": cls.test_dir / "ms",
                 "branch": "main"
             },
             "javascript": {
-                "url": "https://github.com/axios/axios.git",
-                "path": cls.test_dir / "axios", 
+                "url": "https://github.com/JedWatson/classnames.git",  # ~300 lignes
+                "path": cls.test_dir / "classnames",
                 "branch": "main"
             },
             "go": {
-                "url": "https://github.com/gin-gonic/gin.git",
-                "path": cls.test_dir / "gin",
+                "url": "https://github.com/google/uuid.git",  # ~2k lignes
+                "path": cls.test_dir / "uuid",
                 "branch": "master"
             }
         }
@@ -93,7 +93,9 @@ class TestResultRankerQuality:
     def setup_method(self):
         """Setup test instance"""
         self.ranker = ResultRanker()
-        self.client = HybridQdrantClient("http://localhost:6334")
+
+        # TODO: Maybe we should ALWAYS add direct embedder to avoid forgetting?
+        self.client = HybridQdrantClient("http://localhost:6334")  
         
         # Initialize components for HybridIndexer (will be done in async setup)
         self.parser_pipeline = None
@@ -109,6 +111,13 @@ class TestResultRankerQuality:
         if self.indexer is None:
             self.parser_pipeline = ProcessParsingPipeline(max_workers=2, batch_size=5)
             self.embedder = StellaEmbedder()
+
+            # Pre-load the Stella model to exclude loading time from performance measurements
+            await self.embedder.load_model()
+            
+            # Create new client with embedder - the old client was missing embedder
+            self.client = HybridQdrantClient("http://localhost:6334", embedder=self.embedder)
+            
             self.cache_manager = CacheManager()
             self.indexer = HybridIndexer(
                 parser_pipeline=self.parser_pipeline,
@@ -116,6 +125,7 @@ class TestResultRankerQuality:
                 storage_client=self.client,
                 cache_manager=self.cache_manager
             )
+
     
     def teardown_method(self):
         """Cleanup after each test"""
@@ -143,21 +153,28 @@ class TestResultRankerQuality:
     
     async def get_or_create_collection(self, repo_name: str) -> str:
         """Get existing collection for repo or create it if needed"""
-        # Deterministic collection name based on repo
-        collection_name = f"test-ranking-{repo_name}"
-        
-        # Check if collection already exists
-        try:
-            collection_info = await self.client.get_collection_info(collection_name)
-            if collection_info:
-                # Collection exists and is valid, reuse it
-                self.__class__.shared_collections.add(collection_name)
-                return collection_name
-        except Exception:
-            pass  # Collection doesn't exist, create it
-        
-        # Setup async components if not already done
+        # Setup async components first  
         await self._async_setup()
+        
+        # Use CollectionManager to get the proper collection name format
+        base_project_name = f"test-ranking-{repo_name}"
+        from core.storage.schemas import CollectionManager, CollectionType
+        collection_manager = CollectionManager(project_name=base_project_name)
+        actual_collection_name = collection_manager.get_collection_name(CollectionType.CODE)
+        
+        print(f"Looking for collection: {actual_collection_name}")
+        
+        # Check if collection already exists with sufficient entities
+        try:
+            collection_info = await self.client.get_collection_info(actual_collection_name)
+            if collection_info and collection_info.get("points_count", 0) > 10:
+                # Collection exists and has entities, reuse it
+                self.__class__.shared_collections.add(actual_collection_name)
+                print(f"✅ REUSING existing collection: {actual_collection_name} ({collection_info.get('points_count', 0)} entities)")
+                return actual_collection_name
+        except Exception as e:
+            print(f"Collection {actual_collection_name} doesn't exist: {e}")
+            pass  # Collection doesn't exist, create it
         
         repo_info = self.repos[repo_name]
         repo_path = repo_info["path"]
@@ -165,20 +182,27 @@ class TestResultRankerQuality:
         if not repo_path.exists():
             raise pytest.skip(f"Repository {repo_name} not available")
         
-        # Create and index new collection
+        # Create and index new collection using consistent naming
+        print(f"🔄 CREATING new collection: {actual_collection_name}")
+        
         config = IndexingJobConfig(
             project_path=repo_path,
-            project_name=collection_name,  # Use collection name as project name
+            project_name=base_project_name,  # Use base name, CollectionManager handles suffix
             include_patterns=["*.py", "*.js", "*.ts", "*.go", "*.rs"],
-            batch_size=50
+            exclude_patterns=["**/node_modules/**", "**/target/**", "**/.git/**", "**/build/**"],
+            batch_size=50,
+            # Use entity-level configuration
+            entity_scan_mode="full_rescan",
+            enable_entity_monitoring=True,
+            entity_batch_size=50
         )
         
         await self.indexer.index_project(config)
         
-        # Get the actual collection name
-        from core.storage.schemas import CollectionManager, CollectionType
-        collection_manager = CollectionManager(project_name=config.project_name)
-        actual_collection_name = collection_manager.get_collection_name(CollectionType.CODE)
+        # Verify entities were created
+        collection_info = await self.client.get_collection_info(actual_collection_name)
+        entity_count = collection_info.get("points_count", 0) if collection_info else 0
+        print(f"✅ CREATED collection {actual_collection_name} with {entity_count} entities")
         
         # Track for cleanup
         self.__class__.shared_collections.add(actual_collection_name)
@@ -221,29 +245,29 @@ class TestResultRankerQuality:
         ranker = ResultRanker(config)
         
         # DEBUG: Afficher les scores avant ranking
-        print("\n=== BEFORE RANKING ===")
-        for i, r in enumerate(results):
-            doc_len = len(r.point.payload.get("docstring", ""))
-            print(f"{i}: {r.point.payload.get('entity_name', 'Unknown')[:30]:30} | "
-                f"Score: {r.score:.3f} | Doc: {doc_len:4d} chars | "
-                f"File: {r.point.payload.get('file_path', '')[-50:]}")
+        # print("\n=== BEFORE RANKING ===")
+        # for i, r in enumerate(results):
+        #     doc_len = len(r.point.payload.get("docstring", ""))
+        #     print(f"{i}: {r.point.payload.get('entity_name', 'Unknown')[:30]:30} | "
+        #         f"Score: {r.score:.3f} | Doc: {doc_len:4d} chars | "
+        #         f"File: {r.point.payload.get('file_path', '')[-50:]}")
         
         ranked_results = ranker.rank_results(results, "request handling")
         
         # DEBUG: Afficher les scores après ranking
-        print("\n=== AFTER RANKING ===")
-        for i, r in enumerate(ranked_results):
-            doc_len = len(r.point.payload.get("docstring", ""))
-            # Calculer le boost théorique
-            expected_multiplier = 1.0
-            if doc_len > 200:
-                expected_multiplier += 0.4 * 0.8  # quality_weight * boost
-            elif doc_len <= 20:
-                expected_multiplier += 0.0
+        # print("\n=== AFTER RANKING ===")
+        # for i, r in enumerate(ranked_results):
+        #     doc_len = len(r.point.payload.get("docstring", ""))
+        #     # Calculer le boost théorique
+        #     expected_multiplier = 1.0
+        #     if doc_len > 200:
+        #         expected_multiplier += 0.4 * 0.8  # quality_weight * boost
+        #     elif doc_len <= 20:
+        #         expected_multiplier += 0.0
             
-            print(f"{i}: {r.point.payload.get('entity_name', 'Unknown')[:30]:30} | "
-                f"Score: {r.score:.3f} | Doc: {doc_len:4d} chars | "
-                f"Expected mult: {expected_multiplier:.2f}x")
+        #     print(f"{i}: {r.point.payload.get('entity_name', 'Unknown')[:30]:30} | "
+        #         f"Score: {r.score:.3f} | Doc: {doc_len:4d} chars | "
+        #         f"Expected mult: {expected_multiplier:.2f}x")
         
         # Vérifier que le ranking a changé l'ordre
         original_order = [r.point.id for r in results]
@@ -252,7 +276,7 @@ class TestResultRankerQuality:
         print(f"\nOrder changed: {original_order != ranked_order}")
     
     async def test_hybrid_ranking_on_typescript_codebase(self):
-        """Test hybrid ranking on real TypeScript codebase (got)"""
+        """Test hybrid ranking on real TypeScript codebase"""
         results = await self.scan_real_codebase("typescript", "request", limit=12)
         
         if len(results) < 3:
@@ -294,12 +318,12 @@ class TestResultRankerQuality:
         
     
     async def test_diversity_filtering_on_go_codebase(self):
-        """Test diversity filtering on real Go codebase (gin)"""
+        """Test diversity filtering on real Go codebase"""
         
-        results = await self.scan_real_codebase("go", "gin", limit=10)
+        results = await self.scan_real_codebase("go", "NewString", limit=10)
         
         if len(results) < 5:
-            pytest.skip("Not enough results found in C++ codebase")
+            pytest.skip("Not enough results found in Go codebase")
         
         config = RankingConfig(
             diversity_threshold=0.6,  # Aggressive diversity filtering
@@ -307,7 +331,8 @@ class TestResultRankerQuality:
         )
         ranker = ResultRanker(config)
         
-        ranked_results = ranker.rank_results(results, "json processing")
+        
+        ranked_results = ranker.rank_results(results, "uuid")
         
         # Should have fewer results due to diversity filtering
         assert len(ranked_results) <= len(results)
