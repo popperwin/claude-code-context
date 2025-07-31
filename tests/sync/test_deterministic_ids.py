@@ -61,7 +61,7 @@ class TestDeterministicEntityId:
         
         # All IDs should be identical
         assert id1 == id2 == id3
-        assert len(id1) == 16  # SHA256 truncated to 16 chars
+        assert len(id1) == 36  # UUID format
     
     def test_different_entities_different_ids(self):
         """Test that different entities produce different IDs."""
@@ -116,9 +116,16 @@ class TestDeterministicEntityId:
         
         entity_id = DeterministicEntityId.generate(entity, file_hash)
         
-        # Should be 16 character hexadecimal string
-        assert len(entity_id) == 16
-        assert all(c in '0123456789abcdef' for c in entity_id)
+        # Should be 36 character UUID format
+        assert len(entity_id) == 36
+        # UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+        parts = entity_id.split('-')
+        assert len(parts) == 5
+        assert len(parts[0]) == 8 and all(c in '0123456789abcdef' for c in parts[0])
+        assert len(parts[1]) == 4 and all(c in '0123456789abcdef' for c in parts[1])
+        assert len(parts[2]) == 4 and all(c in '0123456789abcdef' for c in parts[2])
+        assert len(parts[3]) == 4 and all(c in '0123456789abcdef' for c in parts[3])
+        assert len(parts[4]) == 12 and all(c in '0123456789abcdef' for c in parts[4])
     
     def test_cache_functionality(self):
         """Test that ID cache improves performance for repeated calls."""
@@ -152,7 +159,7 @@ class TestDeterministicEntityId:
         # Should be a new entity object with updated ID (entities are immutable)
         assert updated_entity is not entity
         assert updated_entity.id != original_id
-        assert len(updated_entity.id) == 16
+        assert len(updated_entity.id) == 36
         
         # ID should be consistent
         expected_id = DeterministicEntityId.generate(entity, file_hash)
@@ -192,8 +199,8 @@ class TestDeterministicEntityId:
         id2 = DeterministicEntityId.generate(entity, short_hash)
         
         # Both should produce valid IDs (but different)
-        assert len(id1) == 16
-        assert len(id2) == 16
+        assert len(id1) == 36
+        assert len(id2) == 36
         assert id1 != id2
     
     def test_cache_clearing(self):
@@ -296,8 +303,10 @@ class TestDeterministicEntityIdEdgeCases:
         entity_id = DeterministicEntityId.generate(entity, file_hash)
         
         # Should still generate valid ID
-        assert len(entity_id) == 16
-        assert entity_id.isalnum()
+        assert len(entity_id) == 36
+        # Check UUID format
+        parts = entity_id.split('-')
+        assert len(parts) == 5
     
     def test_unicode_entity_name(self):
         """Test handling of unicode characters in entity name."""
@@ -326,8 +335,10 @@ class TestDeterministicEntityIdEdgeCases:
         entity_id = DeterministicEntityId.generate(entity, file_hash)
         
         # Should generate valid ID
-        assert len(entity_id) == 16
-        assert entity_id.isalnum()
+        assert len(entity_id) == 36
+        # Check UUID format
+        parts = entity_id.split('-')
+        assert len(parts) == 5
     
     def test_very_long_entity_name(self):
         """Test handling of very long entity names."""
@@ -356,9 +367,11 @@ class TestDeterministicEntityIdEdgeCases:
         file_hash = "abc123"
         entity_id = DeterministicEntityId.generate(entity, file_hash)
         
-        # Should still generate valid 16-character ID
-        assert len(entity_id) == 16
-        assert entity_id.isalnum()
+        # Should still generate valid UUID format ID
+        assert len(entity_id) == 36
+        # Check UUID format
+        parts = entity_id.split('-')
+        assert len(parts) == 5
     
     def test_special_characters_in_name(self):
         """Test handling of special characters in entity name."""
@@ -388,8 +401,10 @@ class TestDeterministicEntityIdEdgeCases:
         entity_id = DeterministicEntityId.generate(entity, file_hash)
         
         # Should generate valid ID
-        assert len(entity_id) == 16
-        assert entity_id.isalnum()
+        assert len(entity_id) == 36
+        # Check UUID format
+        parts = entity_id.split('-')
+        assert len(parts) == 5
     
     def test_empty_file_hash(self):
         """Test handling of empty file hash."""
@@ -415,5 +430,7 @@ class TestDeterministicEntityIdEdgeCases:
         entity_id = DeterministicEntityId.generate(entity, "")
         
         # Should still generate valid ID
-        assert len(entity_id) == 16
-        assert entity_id.isalnum()
+        assert len(entity_id) == 36
+        # Check UUID format
+        parts = entity_id.split('-')
+        assert len(parts) == 5

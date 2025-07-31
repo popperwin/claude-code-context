@@ -341,7 +341,7 @@ class EntityLifecycleManager:
                         [entity_id]
                     )
                     if not delete_result.success:
-                        logger.warning(f"Failed to delete entity {entity_id}: {delete_result.message}")
+                        logger.warning(f"Failed to delete entity {entity_id}: {delete_result.error}")
             
             # Add new entities
             if entities_to_add:
@@ -349,7 +349,7 @@ class EntityLifecycleManager:
                 storage_result = await self._store_entities(entities_to_add)
                 if not storage_result.success:
                     results["success"] = False
-                    results["error"] = f"Failed to store new entities: {storage_result.message}"
+                    results["error"] = f"Failed to store new entities: {storage_result.error}"
             
             # Update entity-file mappings
             if results["success"]:
@@ -450,14 +450,31 @@ class EntityLifecycleManager:
         """
         Get all entity IDs associated with a file.
         
+        Uses direct Qdrant query with file_path filter instead of maintaining
+        an in-memory cache, eliminating synchronization issues.
+        
         Args:
             file_path: Path to the file
             
         Returns:
             Set of entity IDs
         """
-        async with self._mapping_lock:
-            return self._file_entity_map.get(file_path, set()).copy()
+        try:
+            # Query Qdrant directly using file_path filter
+            points = await self.storage_client.get_points_by_filter(
+                collection_name=self.collection_name,
+                filter_conditions={"file_path": file_path},
+                limit=100000
+            )
+            
+            entity_ids = {str(point.id) for point in points if point.id}
+            
+            logger.debug(f"Found {len(entity_ids)} entities for {file_path}")
+            return entity_ids
+            
+        except Exception as e:
+            logger.error(f"Error querying entities for file {file_path}: {e}")
+            return set()
     
     async def _update_mappings_for_entities(self, entities: List[Entity], file_path: str) -> None:
         """
@@ -539,24 +556,23 @@ class EntityLifecycleManager:
             logger.info("Rebuilding entity-to-file mappings from collection")
             
             # Query all entities in the collection
-            search_result = await self.storage_client.search_hybrid(
+            search_results = await self.storage_client.search_hybrid(
                 collection_name=self.collection_name,
                 query="*",  # Match all entities
                 limit=10000,  # Large limit to get all entities
-                payload_filter={}
+                filters={}
             )
             
-            if not search_result.success:
-                raise Exception(f"Failed to query collection: {search_result.message}")
+            logger.info(f"Found {len(search_results)} entities to rebuild mappings")
             
             # Rebuild mappings
             async with self._mapping_lock:
                 self._entity_file_map.clear()
                 self._file_entity_map.clear()
                 
-                for result in search_result.results:
-                    entity_id = result.get('id')
-                    file_path = result.get('payload', {}).get('file_path')
+                for result in search_results:
+                    entity_id = result.point.id
+                    file_path = result.point.payload.get('file_path')
                     
                     if entity_id and file_path:
                         self._entity_file_map[entity_id] = file_path

@@ -231,20 +231,14 @@ class CollectionConsistencyValidator:
                 collection_name=self.collection_name,
                 query="*",  # Match all entities
                 limit=10000,  # Large limit to get all entities
-                payload_filter={}
+                filters={}
             )
             
+            # search_hybrid returns a list of SearchResult objects directly
             if not search_result:
-                # Handle case where search_result is empty list or None
                 collection_entities = []
-            elif hasattr(search_result, 'success') and not search_result.success:
-                raise Exception(f"Failed to query collection: {getattr(search_result, 'message', 'Unknown error')}")
-            elif isinstance(search_result, list):
-                collection_entities = search_result
-            elif hasattr(search_result, 'results'):
-                collection_entities = search_result.results
             else:
-                collection_entities = []
+                collection_entities = search_result
             
             result.total_entities_checked = len(collection_entities)
             
@@ -255,9 +249,9 @@ class CollectionConsistencyValidator:
             # Track files that have entities
             files_with_entities = set()
             
-            for entity_data in collection_entities:
-                entity_id = entity_data.get('id')
-                payload = entity_data.get('payload', {})
+            for search_result in collection_entities:
+                entity_id = search_result.point.id
+                payload = search_result.point.payload
                 if payload is None:
                     payload = {}
                 file_path = payload.get('file_path', '')
@@ -677,16 +671,17 @@ class CollectionConsistencyValidator:
                 collection_name=collection_name,
                 query="*",  # Match all entities
                 limit=10000,  # Large limit to get all entities
-                payload_filter={}
+                filters={}
             )
             
-            if not search_result.success:
-                raise Exception(f"Failed to query collection: {search_result.message}")
+            # search_hybrid returns a list of SearchResult objects directly
+            if not search_result:
+                raise Exception("Failed to query collection: No results returned")
             
             # Process each entity from collection
-            for item in search_result.results:
-                entity_id = item.get('id')
-                payload = item.get('payload', {})
+            for search_result_item in search_result:
+                entity_id = search_result_item.point.id
+                payload = search_result_item.point.payload
                 
                 if entity_id:
                     collection_entities[entity_id] = {

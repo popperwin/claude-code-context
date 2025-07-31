@@ -16,9 +16,9 @@ from qdrant_client.models import (
     VectorParams, Distance, PointStruct, Filter, FieldCondition, 
     MatchValue, MatchText, SearchParams, WithPayloadInterface, ScoredPoint,
     CreateCollection, CollectionInfo, CountRequest, SearchRequest,
-    TextIndexParams, TokenizerType, PayloadSchemaType, PointsSelector,
-    FilterSelector
+    TextIndexParams, TokenizerType, PayloadSchemaType, FilterSelector
 )
+from qdrant_client.http.models.models import PointIdsList
 from qdrant_client.http.exceptions import ResponseHandlingException
 
 from .schemas import (
@@ -485,8 +485,11 @@ class HybridQdrantClient:
             List of search results
         """
         if not self.embedder:
-            logger.warning("No embedder configured for semantic search")
-            return []
+            raise ValueError(
+                "No embedder configured for semantic search. "
+                "HybridQdrantClient requires an embedder for semantic search operations. "
+                "Please configure an embedder when creating the client."
+            )
         
         start_time = time.time()
         
@@ -946,7 +949,7 @@ class HybridQdrantClient:
             logger.error(error_msg)
             
             return StorageResult.failed_operation(
-                "delete_points", collection_name, error_msg, processing_time
+                "delete", collection_name, error_msg, processing_time
             )
     
     async def delete_points_by_file_path(
@@ -973,6 +976,122 @@ class HybridQdrantClient:
         return await self.delete_points_by_filter(
             collection_name, filter_conditions, batch_size
         )
+    
+    async def delete_points(
+        self,
+        collection_name: str,
+        point_ids: List[Union[str, int]]
+    ) -> StorageResult:
+        """
+        Delete specific points by their IDs.
+        
+        Args:
+            collection_name: Collection to delete from
+            point_ids: List of point IDs to delete
+            
+        Returns:
+            Storage operation result with deletion count
+        """
+        start_time = time.time()
+        
+        try:
+            if not point_ids:
+                processing_time = (time.time() - start_time) * 1000
+                return StorageResult.successful_delete(collection_name, 0, processing_time)
+            
+            # Debug: Print ID types to identify the problematic ones
+            logger.error("=" * 80)
+            logger.error(f"DELETE POINTS DEBUG - received {len(point_ids)} IDs:")
+            for i, point_id in enumerate(point_ids):
+                logger.error(f"  ID[{i}]: {point_id} (type: {type(point_id)}, repr: {repr(point_id)})")
+            logger.error("=" * 80)
+            
+            # Convert IDs to appropriate format for Qdrant
+            # Keep the original types as Qdrant client handles both strings and ints
+            try:
+                points_selector = PointIdsList(points=point_ids)
+                
+                await asyncio.to_thread(
+                    self.client.delete,
+                    collection_name=collection_name,
+                    points_selector=points_selector
+                )
+            except Exception as inner_e:
+                # More specific error handling to identify the exact issue
+                raise Exception(f"PointsSelector or delete operation failed: {type(inner_e).__name__}: {inner_e}")
+            
+            processing_time = (time.time() - start_time) * 1000
+            
+            logger.info(
+                f"Deleted {len(point_ids)} points from {collection_name} "
+                f"in {processing_time:.2f}ms"
+            )
+            
+            return StorageResult.successful_delete(
+                collection_name, len(point_ids), processing_time
+            )
+            
+        except Exception as e:
+            processing_time = (time.time() - start_time) * 1000
+            error_msg = f"Failed to delete points from {collection_name}: {e}"
+            logger.error(error_msg)
+            
+            return StorageResult.failed_operation(
+                "delete", collection_name, error_msg, processing_time
+            )
+    
+    async def get_points_by_filter(
+        self,
+        collection_name: str,
+        filter_conditions: Dict[str, Any],
+        limit: int = 1000
+    ) -> List[QdrantPoint]:
+        """
+        Get points matching filter conditions.
+        
+        Args:
+            collection_name: Collection to query
+            filter_conditions: Filter conditions to match
+            limit: Maximum points to return
+            
+        Returns:
+            List of QdrantPoint objects
+        """
+        try:
+            # Build filter using the same logic as delete_points_by_filter
+            search_filter = self._build_additional_filters(filter_conditions)
+            if not search_filter:
+                return []
+            
+            # Use scroll to get points with filter
+            scroll_result = await asyncio.to_thread(
+                self.client.scroll,
+                collection_name=collection_name,
+                scroll_filter=search_filter,
+                limit=limit,
+                with_payload=True,
+                with_vectors=False
+            )
+            
+            # scroll returns (points, next_page_offset)
+            points = scroll_result[0]
+            
+            # Convert to QdrantPoint objects
+            qdrant_points = []
+            for point in points:
+                qdrant_point = QdrantPoint(
+                    id=str(point.id),
+                    vector=[0.0] * 1024,  # Dummy vector since we're not using vectors
+                    payload=point.payload or {}
+                )
+                qdrant_points.append(qdrant_point)
+            
+            logger.debug(f"Found {len(qdrant_points)} points matching filter in {collection_name}")
+            return qdrant_points
+            
+        except Exception as e:
+            logger.error(f"Failed to get points by filter from {collection_name}: {e}")
+            return []
     
     async def get_collection_info(self, collection_name: str) -> Optional[Dict[str, Any]]:
         """Get information about a collection"""

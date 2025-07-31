@@ -41,7 +41,7 @@ class DeterministicEntityId:
             file_hash: SHA-256 hash of the file content
             
         Returns:
-            A 16-character deterministic ID
+            A UUID-format deterministic ID (36 characters)
             
         Example:
             For a function named "calculate_sum" at line 42 in a file with hash "abc123...",
@@ -75,7 +75,11 @@ class DeterministicEntityId:
         content = ":".join(content_parts)
         
         # Generate deterministic hash
-        entity_id = hashlib.sha256(content.encode('utf-8')).hexdigest()[:16]
+        hash_hex = hashlib.sha256(content.encode('utf-8')).hexdigest()
+        
+        # Convert to UUID format (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+        # Use first 32 chars of hash to construct a valid UUID
+        entity_id = f"{hash_hex[:8]}-{hash_hex[8:12]}-{hash_hex[12:16]}-{hash_hex[16:20]}-{hash_hex[20:32]}"
         
         # Cache the result
         DeterministicEntityId._id_cache[cache_key] = entity_id
@@ -108,7 +112,7 @@ class DeterministicEntityId:
             signature: Entity signature (optional)
             
         Returns:
-            A 16-character deterministic ID
+            A UUID-format deterministic ID (36 characters)
         """
         content_parts = [
             name,
@@ -126,7 +130,10 @@ class DeterministicEntityId:
             content_parts.append(sig_hash)
         
         content = ":".join(content_parts)
-        return hashlib.sha256(content.encode('utf-8')).hexdigest()[:16]
+        hash_hex = hashlib.sha256(content.encode('utf-8')).hexdigest()
+        
+        # Convert to UUID format (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+        return f"{hash_hex[:8]}-{hash_hex[8:12]}-{hash_hex[12:16]}-{hash_hex[16:20]}-{hash_hex[20:32]}"
     
     @staticmethod
     def update_entity_with_deterministic_id(entity: 'Entity', file_hash: str) -> 'Entity':
@@ -179,13 +186,23 @@ class DeterministicEntityId:
         Returns:
             True if the ID appears to be deterministically generated
         """
-        # Deterministic IDs should be exactly 16 hexadecimal characters
-        if len(entity_id) != 16:
+        # Deterministic IDs should be exactly 36 characters in UUID format
+        if len(entity_id) != 36:
             return False
         
-        try:
-            # Should be valid hexadecimal
-            int(entity_id, 16)
-            return True
-        except ValueError:
+        # UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+        parts = entity_id.split('-')
+        if len(parts) != 5:
             return False
+        
+        # Validate each part contains only hexadecimal characters
+        expected_lengths = [8, 4, 4, 4, 12]
+        for i, part in enumerate(parts):
+            if len(part) != expected_lengths[i]:
+                return False
+            try:
+                int(part, 16)
+            except ValueError:
+                return False
+        
+        return True

@@ -22,6 +22,8 @@ from ..models.entities import Entity, Relation
 from ..storage.schemas import CollectionManager, CollectionType
 from .incremental import IncrementalIndexer, FileChangeDetector
 from .cache import CacheManager
+from .state_analyzer import CollectionStateAnalyzer
+from .scan_mode import EntityScanModeSelector, EntityScanMode
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,13 @@ class IndexingJobConfig:
     sync_worker_count: int = 2
     sync_auto_repair: bool = True
     sync_validation_interval_minutes: int = 5
+    
+    # Entity-level scan configuration
+    entity_scan_mode: str = "auto"  # "full_rescan", "entity_sync", "sync_only", "auto"
+    enable_entity_monitoring: bool = True
+    entity_batch_size: int = 50
+    entity_change_detection: bool = True
+    entity_content_hashing: bool = True
 
 
 @dataclass 
@@ -202,6 +211,17 @@ class HybridIndexer:
         # Initialize incremental indexer
         self.incremental_indexer = IncrementalIndexer()
         
+        # Initialize entity-level components
+        self.state_analyzer = CollectionStateAnalyzer(
+            storage_client=storage_client,
+            staleness_threshold_hours=24,
+            min_health_score=0.7
+        )
+        self.scan_mode_selector = EntityScanModeSelector(
+            storage_client=storage_client,
+            state_analyzer=self.state_analyzer
+        )
+        
         # Progress tracking
         self._progress_callbacks: List[Callable[[IndexingJobMetrics], None]] = []
         
@@ -243,7 +263,7 @@ class HybridIndexer:
         config: Optional[IndexingJobConfig] = None
     ) -> bool:
         """
-        Enable real-time synchronization for a project.
+        Enable real-time synchronization for a project (delegates to entity-level sync).
         
         Args:
             project_path: Root path of the project
@@ -260,38 +280,12 @@ class HybridIndexer:
             logger.warning("Real-time synchronization is not enabled in configuration")
             return False
         
-        try:
-            # Initialize sync engine if not already done
-            if not self.sync_engine:
-                self._initialize_sync_engine()
-            
-            if not self.sync_engine:
-                raise Exception("Failed to initialize synchronization engine")
-            
-            # Start the sync engine if not running
-            if not self.sync_engine.is_running:
-                success = await self.sync_engine.start_monitoring()
-                if not success:
-                    raise Exception("Failed to start synchronization engine")
-            
-            # Add this project to synchronization
-            success = await self.sync_engine.add_project(
-                project_path=project_path,
-                collection_name=collection_name,
-                debounce_ms=config.sync_debounce_ms,
-                start_monitoring=True
-            )
-            
-            if success:
-                logger.info(f"Enabled real-time synchronization for {project_path}")
-            else:
-                logger.error(f"Failed to add project {project_path} to synchronization")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error enabling real-time synchronization: {e}")
-            return False
+        # Delegate to entity-level sync method
+        return await self._enable_entity_sync(
+            project_path=project_path,
+            collection_name=collection_name,
+            config=config
+        )
     
     async def disable_realtime_sync(self, project_path: Path) -> bool:
         """
@@ -375,13 +369,42 @@ class HybridIndexer:
         if callback in self._progress_callbacks:
             self._progress_callbacks.remove(callback)
     
+    async def select_entity_scan_mode(
+        self,
+        collection_name: str,
+        project_path: Path,
+        config: Optional[IndexingJobConfig] = None
+    ):
+        """
+        Select optimal entity scan mode for indexing operation.
+        
+        Args:
+            collection_name: Name of collection to analyze
+            project_path: Project root path
+            config: Optional configuration with scan mode preferences
+            
+        Returns:
+            ScanModeDecision with selected mode and reasoning
+        """
+        if not config:
+            config = self.default_config
+        
+        requested_mode = config.entity_scan_mode if config else "auto"
+        
+        return await self.scan_mode_selector.select_scan_mode(
+            collection_name=collection_name,
+            project_path=project_path,
+            requested_mode=requested_mode,
+            force_mode=False
+        )
+    
     async def index_project(
         self,
         config: IndexingJobConfig,
         show_progress: bool = True
     ) -> IndexingJobMetrics:
         """
-        Index an entire project with comprehensive tracking.
+        Index an entire project using pure entity-level operations.
         
         Args:
             config: Indexing job configuration
@@ -393,68 +416,54 @@ class HybridIndexer:
         metrics = IndexingJobMetrics()
         
         try:
-            logger.info(f"Starting project indexing: {config.project_path}")
+            logger.info(f"Starting entity-level project indexing: {config.project_path}")
             
             # Phase 0: Ensure Collection Exists
             collection_name = await self._ensure_collection_exists(
                 config.project_name, config.collection_type
             )
             
-            # Phase 1: File Discovery
-            files = await self._discover_files(config, metrics)
-            if not files:
-                logger.warning("No files found to index")
-                return metrics
-            
-            # Phase 2: Incremental Filtering (if enabled)
-            if config.incremental:
-                files = await self._filter_incremental_files(
-                    files, collection_name, metrics
-                )
-                if not files:
-                    logger.info("All files are up to date")
-                    return metrics
-            
-            # Phase 3: Parallel Parsing
-            parse_results = await self._parse_files(
-                files, config, metrics, show_progress
-            )
-            if not parse_results:
-                logger.warning("No files parsed successfully")
-                return metrics
-            
-            # Phase 4: Entity and Relation Extraction
-            entities, relations = await self._extract_entities_relations(
-                parse_results, metrics
+            # Phase 1: Entity Scan Mode Selection
+            scan_decision = await self.select_entity_scan_mode(
+                collection_name=collection_name,
+                project_path=config.project_path,
+                config=config
             )
             
-            # Phase 5: Embedding and Storage
-            if entities:
-                await self._index_entities(
-                    entities, collection_name, metrics, show_progress
+            logger.info(f"Selected entity scan mode: {scan_decision.selected_mode.value} "
+                       f"(confidence: {scan_decision.confidence:.2f})")
+            for reason in scan_decision.reasoning:
+                logger.debug(f"Scan mode reasoning: {reason}")
+            
+            # Phase 2: Execute Entity-Level Operations Based on Scan Mode
+            if scan_decision.selected_mode == EntityScanMode.FULL_RESCAN:
+                await self._perform_full_entity_scan(
+                    config, collection_name, metrics, show_progress
+                )
+            elif scan_decision.selected_mode == EntityScanMode.ENTITY_SYNC:
+                await self._perform_entity_sync(
+                    config, collection_name, metrics, show_progress
+                )
+            elif scan_decision.selected_mode == EntityScanMode.SYNC_ONLY:
+                await self._enable_entity_sync_only(
+                    config, collection_name, metrics
                 )
             
-            # Phase 6: Relation Storage (if applicable)
-            if relations:
-                await self._index_relations(
-                    relations, collection_name, metrics
-                )
-            
-            # Phase 7: Enable Real-time Synchronization (if configured)
-            if config.enable_realtime_sync:
-                sync_success = await self.enable_realtime_sync(
+            # Phase 3: Enable Entity Monitoring (if configured)
+            if config.enable_entity_monitoring:
+                sync_success = await self._enable_entity_sync(
                     project_path=config.project_path,
                     collection_name=collection_name,
                     config=config
                 )
                 if sync_success:
-                    logger.info(f"Real-time synchronization enabled for {config.project_path}")
+                    logger.info(f"Entity monitoring enabled for {config.project_path}")
                 else:
-                    logger.warning(f"Failed to enable real-time synchronization for {config.project_path}")
+                    logger.warning(f"Failed to enable entity monitoring for {config.project_path}")
             
-            # Update cache state
+            # Phase 4: Update Entity Cache State
             if config.enable_caching and self.cache_manager:
-                await self._update_cache_state(files, collection_name, metrics)
+                await self._update_entity_cache_state(collection_name, metrics)
             
         except Exception as e:
             metrics.errors.append(f"Indexing failed: {str(e)}")
@@ -701,6 +710,188 @@ class HybridIndexer:
                 except Exception as e:
                     logger.warning(f"Failed to update incremental state for {file_path}: {e}")
     
+    async def _perform_full_entity_scan(
+        self,
+        config: IndexingJobConfig,
+        collection_name: str,
+        metrics: IndexingJobMetrics,
+        show_progress: bool
+    ) -> None:
+        """
+        Perform complete entity-level scan of the project.
+        
+        Args:
+            config: Indexing job configuration
+            collection_name: Collection name for storage
+            metrics: Metrics to update
+            show_progress: Whether to show progress
+        """
+        logger.info(f"Starting full entity scan for {config.project_path}")
+        
+        # Phase 1: File Discovery (entity-aware)
+        files = await self._discover_files(config, metrics)
+        if not files:
+            logger.warning("No files found for entity scan")
+            return
+        
+        # Phase 2: Parallel Parsing with Entity Focus
+        parse_results = await self._parse_files(
+            files, config, metrics, show_progress
+        )
+        if not parse_results:
+            logger.warning("No files parsed successfully during entity scan")
+            return
+        
+        # Phase 3: Entity Extraction and Processing
+        entities, relations = await self._extract_entities_relations(
+            parse_results, metrics
+        )
+        
+        # Phase 4: Entity Storage with Batching
+        if entities:
+            await self._index_entities(
+                entities, collection_name, metrics, show_progress
+            )
+        
+        # Phase 5: Relation Storage (if applicable)
+        if relations:
+            await self._index_relations(
+                relations, collection_name, metrics
+            )
+        
+        logger.info(f"Full entity scan completed: {metrics.entities_indexed} entities indexed")
+    
+    async def _perform_entity_sync(
+        self,
+        config: IndexingJobConfig,
+        collection_name: str,
+        metrics: IndexingJobMetrics,
+        show_progress: bool
+    ) -> None:
+        """
+        Perform entity-level synchronization (changed entities only).
+        
+        Args:
+            config: Indexing job configuration  
+            collection_name: Collection name for storage
+            metrics: Metrics to update
+            show_progress: Whether to show progress
+        """
+        logger.info(f"Starting entity sync for {config.project_path}")
+        
+        # For now, use similar logic to full scan but with entity change detection
+        # This will be enhanced when EntityChangeDetector is implemented
+        await self._perform_full_entity_scan(config, collection_name, metrics, show_progress)
+        
+        # Update sync metrics
+        metrics.sync_time_seconds = metrics.total_duration_seconds
+        
+        logger.info(f"Entity sync completed: {metrics.entities_indexed} entities processed")
+    
+    async def _enable_entity_sync_only(
+        self,
+        config: IndexingJobConfig,
+        collection_name: str,
+        metrics: IndexingJobMetrics
+    ) -> None:
+        """
+        Enable sync-only mode (no immediate indexing).
+        
+        Args:
+            config: Indexing job configuration
+            collection_name: Collection name for monitoring
+            metrics: Metrics to update
+        """
+        logger.info(f"Enabling sync-only mode for {config.project_path}")
+        
+        # Just enable monitoring without immediate indexing
+        sync_success = await self._enable_entity_sync(
+            project_path=config.project_path,
+            collection_name=collection_name,
+            config=config
+        )
+        
+        if sync_success:
+            logger.info("Sync-only mode enabled successfully")
+            metrics.sync_time_seconds = 0.1  # Minimal time for setup
+        else:
+            logger.warning("Failed to enable sync-only mode")
+            metrics.errors.append("Failed to enable sync-only mode")
+    
+    async def _enable_entity_sync(
+        self,
+        project_path: Path,
+        collection_name: str,
+        config: IndexingJobConfig
+    ) -> bool:
+        """
+        Enable entity-level real-time synchronization.
+        
+        Args:
+            project_path: Root path of the project
+            collection_name: Name of the collection to synchronize
+            config: Configuration for sync settings
+            
+        Returns:
+            True if synchronization was enabled successfully
+        """
+        try:
+            # Initialize sync engine if not already done
+            if not self.sync_engine:
+                self._initialize_sync_engine()
+            
+            if not self.sync_engine:
+                raise Exception("Failed to initialize synchronization engine")
+            
+            # Start the sync engine if not running
+            if not self.sync_engine.is_running:
+                success = await self.sync_engine.start_monitoring()
+                if not success:
+                    raise Exception("Failed to start synchronization engine")
+            
+            # Add this project to entity-level synchronization
+            success = await self.sync_engine.add_project(
+                project_path=project_path,
+                collection_name=collection_name,
+                debounce_ms=config.sync_debounce_ms,
+                start_monitoring=True
+            )
+            
+            if success:
+                logger.info(f"Enabled entity synchronization for {project_path}")
+            else:
+                logger.error(f"Failed to add project {project_path} to entity synchronization")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error enabling entity synchronization: {e}")
+            return False
+    
+    async def _update_entity_cache_state(
+        self,
+        collection_name: str,
+        metrics: IndexingJobMetrics
+    ) -> None:
+        """
+        Update entity-level cache state after successful indexing.
+        
+        Args:
+            collection_name: Collection name
+            metrics: Indexing metrics
+        """
+        if not self.cache_manager:
+            return
+        
+        try:
+            # TODO: Implement collection-level cache metadata updates
+            # For now, just log that we completed the entity operations
+            logger.debug(f"Entity cache operations completed for {collection_name}: "
+                        f"{metrics.entities_indexed} entities, {metrics.relations_extracted} relations")
+            
+        except Exception as e:
+            logger.warning(f"Failed to update entity cache state: {e}")
+    
     async def index_single_file(
         self,
         file_path: Path,
@@ -788,6 +979,15 @@ class HybridIndexer:
         
         if self.cache_manager:
             metrics["cache_manager"] = self.cache_manager.get_stats()
+        
+        # Add entity-level components metrics
+        metrics["state_analyzer"] = {
+            "staleness_threshold_hours": self.state_analyzer.staleness_threshold_hours,
+            "min_health_score": self.state_analyzer.min_health_score,
+            "cache_stats": self.state_analyzer.get_cache_stats()
+        }
+        
+        metrics["scan_mode_selector"] = self.scan_mode_selector.get_status()
         
         # Add synchronization metrics if available
         if self.sync_engine:
