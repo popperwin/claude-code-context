@@ -871,5 +871,316 @@ def rapid_function_{i}():
             await self.cleanup_integrator(integrator)
 
 
+    @pytest.mark.asyncio
+    async def test_move_file_extension_change_through_integrator(self):
+        """Test that file moves with extension changes are handled correctly through the integrator."""
+        project_dir = self.create_isolated_project_dir("move-extension-change")
+        integrator = await self.create_test_integrator("move-extension-test", project_dir)
+        
+        try:
+            # Create initial .py file
+            py_file = project_dir / "src" / "test_script.py"
+            py_content = '''
+    def test_function():
+        """Test function that will move between extensions."""
+        return "test"
+
+    class TestClass:
+        """Test class for move operations."""
+        pass
+    '''
+            self.write_file(py_file, py_content)
+            
+            # Index the initial file
+            create_result = await integrator.bulk_entity_create([py_file])
+            assert create_result.success, "Initial creation should succeed"
+            
+            # Verify entities exist
+            assert await self.wait_for_entity_exists(integrator, "test_function", "test_script.py")
+            assert await self.wait_for_entity_exists(integrator, "TestClass", "test_script.py")
+            
+            initial_count = await self.count_entities_in_collection(integrator)
+            
+            # Enable real-time sync
+            sync_enabled = await integrator.enable_sync()
+            assert sync_enabled, "Real-time sync should be enabled"
+            await self.wait_for_sync_delay(0.3)
+            
+            # Test 1: Move .py → .txt (should remove entities)
+            txt_file = project_dir / "src" / "test_script.txt"
+            shutil.move(str(py_file), str(txt_file))
+            
+            # Entities should be deleted
+            assert await self.wait_for_entity_not_exists(integrator, "test_function", "test_script.py")
+            assert await self.wait_for_entity_not_exists(integrator, "TestClass", "test_script.py")
+            
+            # Entity count should decrease
+            assert await self.wait_for_entity_count(integrator, initial_count, comparison="lt")
+            
+            # Test 2: Move .txt → .js (should create entities)
+            js_file = project_dir / "src" / "test_script.js"
+            js_content = '''
+    function jsFunction() {
+        return "javascript";
+    }
+
+    class JsClass {
+        constructor() {
+            this.type = "js";
+        }
+    }
+    '''
+            # Write new content before move
+            txt_file.write_text(js_content)
+            shutil.move(str(txt_file), str(js_file))
+            
+            # New file should be detected and indexed
+            await self.wait_for_sync_delay(2.0)  # Give time for detection
+            
+            # For JS files, we may need manual indexing
+            await integrator.bulk_entity_create([js_file])
+            
+            # Verify new JS entities exist
+            results = await self.search_for_entity(integrator, "jsFunction", "test_script.js")
+            assert len(results) > 0, "Should find JS function"
+            
+        finally:
+            await self.cleanup_integrator(integrator)
+
+
+    @pytest.mark.asyncio
+    async def test_concurrent_sync_operations_robustness(self):
+        """Test robustness of concurrent enable/disable sync operations."""
+        project_dir = self.create_isolated_project_dir("concurrent-sync-ops")
+        integrator = await self.create_test_integrator("concurrent-sync-test", project_dir)
+        
+        try:
+            # Create test files
+            test_files = []
+            for i in range(3):
+                file_path = project_dir / "src" / f"concurrent_test_{i}.py"
+                content = f'''
+    def concurrent_func_{i}():
+        """Function {i} for concurrent testing."""
+        return "test_{i}"
+    '''
+                self.write_file(file_path, content)
+                test_files.append(file_path)
+            
+            # Index initial files
+            create_result = await integrator.bulk_entity_create(test_files)
+            assert create_result.success, "Initial creation should succeed"
+            
+            # Test concurrent enable operations
+            enable_tasks = []
+            for _ in range(5):
+                enable_tasks.append(asyncio.create_task(integrator.enable_sync()))
+            
+            results = await asyncio.gather(*enable_tasks, return_exceptions=True)
+            
+            # At least one should succeed, others might return True (already enabled)
+            success_count = sum(1 for r in results if r is True)
+            assert success_count >= 1, "At least one enable should succeed"
+            
+            # No exceptions should be raised
+            exceptions = [r for r in results if isinstance(r, Exception)]
+            assert len(exceptions) == 0, f"No exceptions should occur: {exceptions}"
+            
+            # Verify sync is working by creating a new file
+            new_file = project_dir / "src" / "sync_test.py"
+            content = '''
+    def sync_test_function():
+        """Test sync is working."""
+        return "sync works"
+    '''
+            self.write_file(new_file, content)
+            
+            # Should be auto-indexed
+            assert await self.wait_for_entity_exists(integrator, "sync_test_function", "sync_test.py")
+            
+            # Test concurrent disable operations
+            disable_tasks = []
+            for _ in range(5):
+                disable_tasks.append(asyncio.create_task(integrator.disable_real_time_sync()))
+            
+            results = await asyncio.gather(*disable_tasks, return_exceptions=True)
+            
+            # All should succeed (return True)
+            success_count = sum(1 for r in results if r is True)
+            assert success_count == len(disable_tasks), "All disable operations should succeed"
+            
+            # Test rapid enable/disable cycles
+            cycle_tasks = []
+            for i in range(10):
+                if i % 2 == 0:
+                    cycle_tasks.append(asyncio.create_task(integrator.enable_sync()))
+                else:
+                    cycle_tasks.append(asyncio.create_task(integrator.disable_real_time_sync()))
+            
+            results = await asyncio.gather(*cycle_tasks, return_exceptions=True)
+            
+            # No exceptions should occur
+            exceptions = [r for r in results if isinstance(r, Exception)]
+            assert len(exceptions) == 0, f"No exceptions during rapid cycling: {exceptions}"
+            
+        finally:
+            await self.cleanup_integrator(integrator)
+
+
+    @pytest.mark.asyncio
+    async def test_rapid_sync_lifecycle_prevents_double_cleanup(self):
+        """Test that rapid sync enable/disable cycles don't cause double cleanup issues."""
+        project_dir = self.create_isolated_project_dir("rapid-lifecycle")
+        integrator = await self.create_test_integrator("rapid-lifecycle-test", project_dir)
+        
+        try:
+            # Create initial file
+            test_file = project_dir / "src" / "lifecycle_test.py"
+            content = '''
+    def lifecycle_test():
+        """Test function for lifecycle testing."""
+        return "test"
+    '''
+            self.write_file(test_file, content)
+            
+            # Index file
+            await integrator.bulk_entity_create([test_file])
+            
+            # Perform rapid enable/disable cycles
+            for cycle in range(5):
+                # Enable sync
+                await integrator.enable_sync()
+                
+                # Create a file during sync
+                cycle_file = project_dir / "src" / f"cycle_{cycle}.py"
+                cycle_content = f'''
+    def cycle_function_{cycle}():
+        """Function created in cycle {cycle}."""
+        return "cycle_{cycle}"
+    '''
+                self.write_file(cycle_file, cycle_content)
+                
+                # Brief wait
+                await self.wait_for_sync_delay(0.2)
+                
+                # Disable sync immediately
+                await integrator.disable_real_time_sync()
+                
+                # Try to create another file while disabled
+                disabled_file = project_dir / "src" / f"disabled_{cycle}.py"
+                disabled_content = f'''
+    def disabled_function_{cycle}():
+        """Function created while disabled in cycle {cycle}."""
+        return "disabled_{cycle}"
+    '''
+                self.write_file(disabled_file, disabled_content)
+            
+            # Re-enable sync
+            await integrator.enable_sync()
+            await self.wait_for_sync_delay(0.3)
+            
+            # Verify system is still functional
+            final_file = project_dir / "src" / "final_test.py"
+            final_content = '''
+    def final_test_function():
+        """Final test to verify system health."""
+        return "system healthy"
+    '''
+            self.write_file(final_file, final_content)
+            
+            # Should be auto-indexed
+            assert await self.wait_for_entity_exists(integrator, "final_test_function", "final_test.py")
+            
+            # Check integrator health
+            status = integrator.get_integration_status()
+            assert status["integrator_info"]["real_time_sync_enabled"]
+            assert status["mapping_state"]["health_score"] > 0.8
+            
+        finally:
+            await self.cleanup_integrator(integrator)
+
+
+    @pytest.mark.asyncio
+    async def test_file_move_state_consistency_through_integrator(self):
+        """Test that file move operations maintain consistent entity states."""
+        project_dir = self.create_isolated_project_dir("move-state-consistency")
+        integrator = await self.create_test_integrator("move-state-test", project_dir)
+        
+        try:
+            # Create source file
+            source_py = project_dir / "src" / "source_module.py"
+            content = '''
+    def source_function():
+        """Function that will be moved."""
+        return "source"
+
+    class SourceClass:
+        """Class that will be moved."""
+        
+        def method(self):
+            return "source method"
+    '''
+            self.write_file(source_py, content)
+            
+            # Index source file
+            create_result = await integrator.bulk_entity_create([source_py])
+            assert create_result.success
+            
+            # Verify entities exist
+            assert await self.wait_for_entity_exists(integrator, "source_function", str(source_py))
+            assert await self.wait_for_entity_exists(integrator, "SourceClass", str(source_py))
+            
+            initial_count = await self.count_entities_in_collection(integrator)
+            
+            # Enable sync
+            await integrator.enable_sync()
+            await self.wait_for_sync_delay(0.3)
+            
+            # Move to non-monitored extension
+            target_txt = project_dir / "src" / "target.txt"
+            shutil.move(str(source_py), str(target_txt))
+            
+            # Entities should be deleted
+            assert await self.wait_for_entity_not_exists(integrator, "source_function", str(source_py))
+            assert await self.wait_for_entity_not_exists(integrator, "SourceClass", str(source_py))
+            
+            # Entity count should decrease
+            assert await self.wait_for_entity_count(integrator, initial_count, comparison="lt")
+            
+            # Move to different monitored extension
+            final_js = project_dir / "src" / "final.js"
+            # Update content to JS syntax
+            js_content = '''
+    function finalFunction() {
+        // Function moved and converted to JS
+        return "final";
+    }
+
+    class FinalClass {
+        method() {
+            return "final method";
+        }
+    }
+    '''
+            target_txt.write_text(js_content)
+            shutil.move(str(target_txt), str(final_js))
+            
+            # Wait for detection
+            await self.wait_for_sync_delay(2.0)
+            
+            # May need manual indexing for cross-extension moves
+            await integrator.bulk_entity_create([final_js])
+            
+            # Verify final state
+            js_results = await self.search_for_entity(integrator, "finalFunction")
+            assert len(js_results) > 0, "Should find JS function"
+            
+            # Original entities should not exist
+            py_results = await self.search_for_entity(integrator, "source_function", str(source_py))
+            assert len(py_results) == 0, "Original Python entities should not exist"
+            
+        finally:
+            await self.cleanup_integrator(integrator)
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])

@@ -104,13 +104,14 @@ class ProjectFileSystemWatcher:
         """
         self.project_path = Path(project_path).resolve()
         self.event_queue = event_queue
-        self._config = WatcherConfig.from_env()
-        self.debounce_ms = debounce_ms if debounce_ms is not None else self._config.debounce_ms
         self.recursive = recursive
         self.event_callback = event_callback
         
-        # Load configuration
+        # Load configuration FIRST
         self._config = WatcherConfig.from_env()
+        
+        # Now use config for debounce
+        self.debounce_ms = debounce_ms if debounce_ms is not None else self._config.debounce_ms
         
         # Platform detection for optimizations
         self._platform = platform.system()
@@ -120,7 +121,7 @@ class ProjectFileSystemWatcher:
         
         # Adjust debounce for macOS (FSEvents has higher latency)
         if self._is_macos:
-            self.debounce_ms = max(debounce_ms, 1000)  # Minimum 1s on macOS
+            self.debounce_ms = max(self.debounce_ms, 1000)  # Minimum 1s on macOS
         
         # Combine supported and custom extensions
         self.watched_extensions = self.SUPPORTED_EXTENSIONS.copy()
@@ -150,6 +151,9 @@ class ProjectFileSystemWatcher:
         self._is_monitoring = False
         self._monitor_start_time: Optional[datetime] = None
         
+        # Lifecycle lock for thread-safe start/stop operations
+        self._lifecycle_lock = asyncio.Lock()
+        
         # Error tracking
         self._error_count = 0
         self._last_error: Optional[str] = None
@@ -162,11 +166,30 @@ class ProjectFileSystemWatcher:
     
     async def _ensure_clean_shutdown(self) -> None:
         """Ensure any previous observer is fully cleaned up before starting a new one."""
+        # Note: This is called inside start_monitoring which already holds the lifecycle lock
+        # so we don't need to acquire it again here
+        
         if self.observer:
             logger.warning("Cleaning up previous observer before starting new one")
-            await self.stop_monitoring()
+            
+            # Clear event loop reference in handler first
+            if self.event_handler:
+                self.event_handler.set_event_loop(None)
+            
+            # Stop observer
+            try:
+                self.observer.stop()
+                self.observer.join(timeout=5.0)
+            except Exception as e:
+                logger.warning(f"Error stopping previous observer: {e}")
+            finally:
+                self.observer = None
+                
             # Brief delay to ensure full cleanup on macOS
-            await asyncio.sleep(0.1)
+            if self._is_macos:
+                await asyncio.sleep(self._config.macos_cleanup_delay_s)
+            else:
+                await asyncio.sleep(0.1)
     
     async def start_monitoring(self) -> bool:
         """
@@ -175,183 +198,185 @@ class ProjectFileSystemWatcher:
         Returns:
             True if monitoring started successfully, False otherwise
         """
-        if self._is_monitoring:
-            logger.warning("File system monitoring is already active")
-            return True
-        
-        # Ensure any previous observer is fully cleaned up
-        await self._ensure_clean_shutdown()
-        
-        try:
-            # Validate project path
-            if not self.project_path.exists():
-                raise FileNotFoundError(f"Project path does not exist: {self.project_path}")
+        async with self._lifecycle_lock:  # Serialize start/stop operations
+            if self._is_monitoring:
+                logger.warning("File system monitoring is already active")
+                return True
             
-            if not self.project_path.is_dir():
-                raise NotADirectoryError(f"Project path is not a directory: {self.project_path}")
-            
-            # Create event handler
-            self.event_handler = SyncFileSystemEventHandler(self)
-            
-            # Set the current event loop on the handler for thread-safe communication
-            try:
-                current_loop = asyncio.get_running_loop()
-                self.event_handler.set_event_loop(current_loop)
-                logger.debug(f"Set event loop {id(current_loop)} on file system watcher")
-            except RuntimeError:
-                # No running event loop, this is critical for async operation
-                logger.error("No running event loop found when starting watcher - events will be dropped")
-                return False
-            
-            # Create and configure observer (platform-specific)
-            if self._is_macos:
-                self.observer = FSEventsObserver()
-            else:
-                self.observer = Observer()
+            # Ensure any previous observer is fully cleaned up
+            await self._ensure_clean_shutdown()
             
             try:
-                self.observer.schedule(
-                    self.event_handler,
-                    str(self.project_path),
-                    recursive=self.recursive
-                )
-            except Exception as e:
-                # Handle "already scheduled" errors on macOS
-                if "already scheduled" in str(e).lower():
-                    logger.warning(f"Path already being watched, attempting to recover: {e}")
-                    # Force cleanup and retry
-                    self.observer.stop()
-                    self.observer = None
-                    await asyncio.sleep(self._config.observer_retry_delay_s)  # Wait for cleanup
-                    
-                    # Recreate observer
-                    if self._is_macos:
-                        self.observer = FSEventsObserver()
-                    else:
-                        self.observer = Observer()
-                    
+                # Validate project path
+                if not self.project_path.exists():
+                    raise FileNotFoundError(f"Project path does not exist: {self.project_path}")
+                
+                if not self.project_path.is_dir():
+                    raise NotADirectoryError(f"Project path is not a directory: {self.project_path}")
+                
+                # Create event handler
+                self.event_handler = SyncFileSystemEventHandler(self)
+                
+                # Set the current event loop on the handler for thread-safe communication
+                try:
+                    current_loop = asyncio.get_running_loop()
+                    self.event_handler.set_event_loop(current_loop)
+                    logger.debug(f"Set event loop {id(current_loop)} on file system watcher")
+                except RuntimeError:
+                    # No running event loop, this is critical for async operation
+                    logger.error("No running event loop found when starting watcher - events will be dropped")
+                    return False
+                
+                # Create and configure observer (platform-specific)
+                if self._is_macos:
+                    self.observer = FSEventsObserver()
+                else:
+                    self.observer = Observer()
+                
+                try:
                     self.observer.schedule(
                         self.event_handler,
                         str(self.project_path),
                         recursive=self.recursive
                     )
-                else:
-                    raise
-            
-            # Start observer
-            self.observer.start()
-            
-            # Start confirmation checker for reliability
-            if self._is_macos:
-                self._confirmation_task = asyncio.create_task(
-                    self._confirmation_checker()
+                except Exception as e:
+                    # Handle "already scheduled" errors on macOS
+                    if "already scheduled" in str(e).lower():
+                        logger.warning(f"Path already being watched, attempting to recover: {e}")
+                        # Force cleanup and retry
+                        self.observer.stop()
+                        self.observer = None
+                        await asyncio.sleep(self._config.observer_retry_delay_s)  # Wait for cleanup
+                        
+                        # Recreate observer
+                        if self._is_macos:
+                            self.observer = FSEventsObserver()
+                        else:
+                            self.observer = Observer()
+                        
+                        self.observer.schedule(
+                            self.event_handler,
+                            str(self.project_path),
+                            recursive=self.recursive
+                        )
+                    else:
+                        raise
+                
+                # Start observer
+                self.observer.start()
+                
+                # Start confirmation checker for reliability
+                if self._is_macos:
+                    self._confirmation_task = asyncio.create_task(
+                        self._confirmation_checker()
+                    )
+                
+                # Start state checker for missed events (on all platforms)
+                self._state_check_task = asyncio.create_task(
+                    self._periodic_state_check()
                 )
-            
-            # Start state checker for missed events (on all platforms)
-            self._state_check_task = asyncio.create_task(
-                self._periodic_state_check()
-            )
-            
-            self._is_monitoring = True
-            self._monitor_start_time = datetime.now()
-            self._error_count = 0
-            
-            # Initial state scan
-            await self._scan_initial_state()
-            
-            logger.info(f"Started monitoring {self.project_path} (recursive={self.recursive})")
-            return True
-            
-        except Exception as e:
-            error_msg = f"Failed to start file system monitoring: {e}"
-            logger.error(error_msg)
-            self._last_error = error_msg
-            self._last_error_time = datetime.now()
-            self._error_count += 1
-            return False
+                
+                self._is_monitoring = True
+                self._monitor_start_time = datetime.now()
+                self._error_count = 0
+                
+                # Initial state scan
+                await self._scan_initial_state()
+                
+                logger.info(f"Started monitoring {self.project_path} (recursive={self.recursive})")
+                return True
+                
+            except Exception as e:
+                error_msg = f"Failed to start file system monitoring: {e}"
+                logger.error(error_msg)
+                self._last_error = error_msg
+                self._last_error_time = datetime.now()
+                self._error_count += 1
+                return False
     
     async def stop_monitoring(self) -> None:
         """Stop file system monitoring and cleanup resources."""
-        if not self._is_monitoring:
-            return
-        
-        self._is_monitoring = False
-        
-        # Clear event loop reference in handler to prevent further events
-        if self.event_handler:
-            self.event_handler.set_event_loop(None)
-        
-        # Stop observer with enhanced cleanup for macOS
-        if self.observer:
+        async with self._lifecycle_lock:  # Serialize start/stop operations
+            if not self._is_monitoring:
+                return
+            
+            self._is_monitoring = False
+            
+            # Clear event loop reference in handler to prevent further events
+            if self.event_handler:
+                self.event_handler.set_event_loop(None)
+            
+            # Stop observer with enhanced cleanup for macOS
+            if self.observer:
+                try:
+                    self.observer.stop()
+                    self.observer.join(timeout=5.0)  # Wait up to 5 seconds
+                except Exception as e:
+                    logger.warning(f"Error stopping observer: {e}")
+                finally:
+                    self.observer = None
+                    # On macOS, add extra delay to ensure FSEvents fully releases the watch
+                    if self._is_macos:
+                        await asyncio.sleep(self._config.macos_cleanup_delay_s)
+            
+            # Cancel background tasks
+            tasks_to_cancel = []
+            
+            if self._confirmation_task and not self._confirmation_task.done():
+                tasks_to_cancel.append(self._confirmation_task)
+            
+            if self._state_check_task and not self._state_check_task.done():
+                tasks_to_cancel.append(self._state_check_task)
+            
+            # Cancel pending debounce tasks
             try:
-                self.observer.stop()
-                self.observer.join(timeout=5.0)  # Wait up to 5 seconds
-            except Exception as e:
-                logger.warning(f"Error stopping observer: {e}")
-            finally:
-                self.observer = None
-                # On macOS, add extra delay to ensure FSEvents fully releases the watch
-                if self._is_macos:
-                    await asyncio.sleep(self._config.macos_cleanup_delay_s)
-        
-        # Cancel background tasks
-        tasks_to_cancel = []
-        
-        if self._confirmation_task and not self._confirmation_task.done():
-            tasks_to_cancel.append(self._confirmation_task)
-        
-        if self._state_check_task and not self._state_check_task.done():
-            tasks_to_cancel.append(self._state_check_task)
-        
-        # Cancel pending debounce tasks
-        try:
-            async with self._debounce_lock:
-                tasks_to_cancel.extend(
-                    task for task in self._debounce_tasks.values() 
-                    if not task.done()
-                )
-                
-                # Cancel all tasks
-                for task in tasks_to_cancel:
-                    task.cancel()
-                
-                # Wait for tasks to complete with timeout protection
-                if tasks_to_cancel:
-                    try:
-                        await asyncio.wait_for(
-                            asyncio.gather(*tasks_to_cancel, return_exceptions=True),
-                            timeout=self._config.shutdown_timeout_s
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning("Timeout waiting for debounce tasks to stop - forcing cleanup")
-                    except Exception as e:
-                        logger.warning(f"Error waiting for tasks: {e}")
-                
-                self._debounce_tasks.clear()
-                self._pending_events.clear()
-        except RuntimeError as e:
-            if "Event loop is closed" in str(e):
-                # Event loop is closed, just clear the data structures
-                self._debounce_tasks.clear()
-                self._pending_events.clear()
-                logger.debug("Event loop closed during cleanup, cleared data structures")
-            else:
-                raise
-        
-        # Clear tracking data
-        self._event_confirmations.clear()
-        self._file_states.clear()
-        
-        # Clean up references
-        self.event_handler = None
-        self._confirmation_task = None
-        self._state_check_task = None
-        
-        monitor_duration = None
-        if self._monitor_start_time:
-            monitor_duration = datetime.now() - self._monitor_start_time
-        
-        logger.info(f"Stopped file system monitoring (duration: {monitor_duration})")
+                async with self._debounce_lock:
+                    tasks_to_cancel.extend(
+                        task for task in self._debounce_tasks.values() 
+                        if not task.done()
+                    )
+                    
+                    # Cancel all tasks
+                    for task in tasks_to_cancel:
+                        task.cancel()
+                    
+                    # Wait for tasks to complete with timeout protection
+                    if tasks_to_cancel:
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.gather(*tasks_to_cancel, return_exceptions=True),
+                                timeout=self._config.shutdown_timeout_s
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning("Timeout waiting for debounce tasks to stop - forcing cleanup")
+                        except Exception as e:
+                            logger.warning(f"Error waiting for tasks: {e}")
+                    
+                    self._debounce_tasks.clear()
+                    self._pending_events.clear()
+            except RuntimeError as e:
+                if "Event loop is closed" in str(e):
+                    # Event loop is closed, just clear the data structures
+                    self._debounce_tasks.clear()
+                    self._pending_events.clear()
+                    logger.debug("Event loop closed during cleanup, cleared data structures")
+                else:
+                    raise
+            
+            # Clear tracking data
+            self._event_confirmations.clear()
+            self._file_states.clear()
+            
+            # Clean up references
+            self.event_handler = None
+            self._confirmation_task = None
+            self._state_check_task = None
+            
+            monitor_duration = None
+            if self._monitor_start_time:
+                monitor_duration = datetime.now() - self._monitor_start_time
+            
+            logger.info(f"Stopped file system monitoring (duration: {monitor_duration})")
     
     def should_monitor_file(self, file_path: Path, check_existence: bool = True) -> bool:
         """
@@ -446,11 +471,25 @@ class ProjectFileSystemWatcher:
             if isinstance(event, FileMovedEvent):
                 old_path = Path(event.src_path).resolve()
                 new_path = Path(event.dest_path).resolve()
-                # Accept if EITHER path is monitored (rename .txt → .py)
-                if not any(map(lambda p: self.should_monitor_file(p, check_existence=False),
-                            (old_path, new_path))):
+                
+                # Check monitoring status for both paths
+                old_monitored = self.should_monitor_file(old_path, check_existence=False)
+                new_monitored = self.should_monitor_file(new_path, check_existence=False)
+                
+                if old_monitored and new_monitored:
+                    # Both paths are monitored: true MOVE event
+                    return FileSystemEvent.create_file_moved(old_path, new_path)
+                elif old_monitored and not new_monitored:
+                    # Moving from monitored to non-monitored: treat as DELETE
+                    logger.debug(f"Move from monitored {old_path} to non-monitored {new_path}: generating DELETE")
+                    return FileSystemEvent.create_file_deleted(old_path)
+                elif not old_monitored and new_monitored:
+                    # Moving from non-monitored to monitored: treat as CREATE
+                    logger.debug(f"Move from non-monitored {old_path} to monitored {new_path}: generating CREATE")
+                    return FileSystemEvent.create_file_created(new_path)
+                else:
+                    # Neither path is monitored: ignore
                     return None
-                return FileSystemEvent.create_file_moved(old_path, new_path)
             
             # Check if we should monitor this file
             # For deletion events, file won't exist, so don't check existence
