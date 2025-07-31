@@ -530,16 +530,29 @@ class EntityLifecycleIntegrator:
             True if real-time sync was successfully enabled
         """
         if not self.sync_engine:
-            logger.warning("Real-time sync not available - sync engine not initialized")
-            return False
+            # Initialize sync engine dynamically when enabling sync
+            self.sync_engine = ProjectCollectionSyncEngine(self.storage_client)
+            logger.info("Initialized sync engine for real-time synchronization")
         
         try:
+            # Start the sync engine if not already running
+            if not self.sync_engine.is_running:
+                engine_started = await self.sync_engine.start_monitoring()
+                if not engine_started:
+                    logger.error("Failed to start sync engine")
+                    return False
+                logger.info("Started sync engine")
+            
             # Add project to sync engine
-            await self.sync_engine.add_project(
+            project_added = await self.sync_engine.add_project(
                 self.project_path,
                 self.collection_name,
-                enable_monitoring=True
+                start_monitoring=True
             )
+            
+            if not project_added:
+                logger.error("Failed to add project to sync engine")
+                return False
             
             logger.info(f"Enabled real-time sync for {self.project_path}")
             return True

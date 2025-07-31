@@ -502,7 +502,7 @@ class EntityScanner:
                 result = await self.storage_client.upsert_points(collection_name, qdrant_points)
                 
                 if not result.success:
-                    raise Exception(f"Failed to store entities: {result.message}")
+                    raise Exception(f"Failed to store entities: {result.error}")
             else:
                 # Direct storage without lifecycle management
                 from ..models.storage import QdrantPoint
@@ -519,7 +519,7 @@ class EntityScanner:
                 result = await self.storage_client.upsert_points(collection_name, qdrant_points)
                 
                 if not result.success:
-                    raise Exception(f"Failed to store entities: {result.message}")
+                    raise Exception(f"Failed to store entities: {result.error}")
             
             batch.processing_time = time.perf_counter() - start_time
             batch.success = True

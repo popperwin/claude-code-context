@@ -10,6 +10,7 @@ import logging
 import platform
 import time
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Set, Optional, Callable, Any, List, Tuple
 from datetime import datetime, timedelta
@@ -26,6 +27,25 @@ from .events import FileSystemEvent, EventType, EventPriority
 from .queue import PriorityEventQueue
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class WatcherConfig:
+    """Centralized configuration for the file system watcher."""
+    debounce_ms: int = 500
+    deletion_retention_s: float = 600.0
+    shutdown_timeout_s: float = 3.0
+    disable_random_sample: bool = False
+    macos_cleanup_delay_s: float = 0.5
+    observer_retry_delay_s: float = 0.2
+    
+    @classmethod
+    def from_env(cls) -> 'WatcherConfig':
+        """Create config from environment variables."""
+        return cls(
+            deletion_retention_s=float(os.environ.get('WATCHER_DELETION_RETENTION', '600')),
+            disable_random_sample=os.environ.get('WATCHER_DISABLE_RANDOM') == '1'
+        )
 
 
 class ProjectFileSystemWatcher:
@@ -84,9 +104,13 @@ class ProjectFileSystemWatcher:
         """
         self.project_path = Path(project_path).resolve()
         self.event_queue = event_queue
-        self.debounce_ms = debounce_ms
+        self._config = WatcherConfig.from_env()
+        self.debounce_ms = debounce_ms if debounce_ms is not None else self._config.debounce_ms
         self.recursive = recursive
         self.event_callback = event_callback
+        
+        # Load configuration
+        self._config = WatcherConfig.from_env()
         
         # Platform detection for optimizations
         self._platform = platform.system()
@@ -122,12 +146,6 @@ class ProjectFileSystemWatcher:
         self._state_lock = asyncio.Lock()  # Lock for atomicity
         self._state_check_task: Optional[asyncio.Task] = None
         
-        # Purge configuration (configurable for tests)
-        self._deletion_retention_seconds = float(
-            os.environ.get('WATCHER_DELETION_RETENTION', '600')  # 10 min default
-        )
-        self._disable_random_sample = os.environ.get('WATCHER_DISABLE_RANDOM') == '1'
-        
         # Monitoring state
         self._is_monitoring = False
         self._monitor_start_time: Optional[datetime] = None
@@ -140,7 +158,15 @@ class ProjectFileSystemWatcher:
         logger.info(f"Initialized ProjectFileSystemWatcher for {self.project_path}")
         logger.info(f"Platform: {self._platform}, Debounce: {self.debounce_ms}ms")
         logger.info(f"Watching extensions: {sorted(self.watched_extensions)}")
-        logger.info(f"Deletion retention: {self._deletion_retention_seconds}s, Random sample: {not self._disable_random_sample}")
+        logger.info(f"Deletion retention: {self._config.deletion_retention_s}s, Random sample: {not self._config.disable_random_sample}")
+    
+    async def _ensure_clean_shutdown(self) -> None:
+        """Ensure any previous observer is fully cleaned up before starting a new one."""
+        if self.observer:
+            logger.warning("Cleaning up previous observer before starting new one")
+            await self.stop_monitoring()
+            # Brief delay to ensure full cleanup on macOS
+            await asyncio.sleep(0.1)
     
     async def start_monitoring(self) -> bool:
         """
@@ -152,6 +178,9 @@ class ProjectFileSystemWatcher:
         if self._is_monitoring:
             logger.warning("File system monitoring is already active")
             return True
+        
+        # Ensure any previous observer is fully cleaned up
+        await self._ensure_clean_shutdown()
         
         try:
             # Validate project path
@@ -168,9 +197,11 @@ class ProjectFileSystemWatcher:
             try:
                 current_loop = asyncio.get_running_loop()
                 self.event_handler.set_event_loop(current_loop)
+                logger.debug(f"Set event loop {id(current_loop)} on file system watcher")
             except RuntimeError:
-                # No running event loop, this shouldn't happen in async context
-                logger.warning("No running event loop found when starting watcher")
+                # No running event loop, this is critical for async operation
+                logger.error("No running event loop found when starting watcher - events will be dropped")
+                return False
             
             # Create and configure observer (platform-specific)
             if self._is_macos:
@@ -178,11 +209,34 @@ class ProjectFileSystemWatcher:
             else:
                 self.observer = Observer()
             
-            self.observer.schedule(
-                self.event_handler,
-                str(self.project_path),
-                recursive=self.recursive
-            )
+            try:
+                self.observer.schedule(
+                    self.event_handler,
+                    str(self.project_path),
+                    recursive=self.recursive
+                )
+            except Exception as e:
+                # Handle "already scheduled" errors on macOS
+                if "already scheduled" in str(e).lower():
+                    logger.warning(f"Path already being watched, attempting to recover: {e}")
+                    # Force cleanup and retry
+                    self.observer.stop()
+                    self.observer = None
+                    await asyncio.sleep(self._config.observer_retry_delay_s)  # Wait for cleanup
+                    
+                    # Recreate observer
+                    if self._is_macos:
+                        self.observer = FSEventsObserver()
+                    else:
+                        self.observer = Observer()
+                    
+                    self.observer.schedule(
+                        self.event_handler,
+                        str(self.project_path),
+                        recursive=self.recursive
+                    )
+                else:
+                    raise
             
             # Start observer
             self.observer.start()
@@ -227,11 +281,18 @@ class ProjectFileSystemWatcher:
         if self.event_handler:
             self.event_handler.set_event_loop(None)
         
-        # Stop observer
+        # Stop observer with enhanced cleanup for macOS
         if self.observer:
-            self.observer.stop()
-            self.observer.join(timeout=5.0)  # Wait up to 5 seconds
-            self.observer = None
+            try:
+                self.observer.stop()
+                self.observer.join(timeout=5.0)  # Wait up to 5 seconds
+            except Exception as e:
+                logger.warning(f"Error stopping observer: {e}")
+            finally:
+                self.observer = None
+                # On macOS, add extra delay to ensure FSEvents fully releases the watch
+                if self._is_macos:
+                    await asyncio.sleep(self._config.macos_cleanup_delay_s)
         
         # Cancel background tasks
         tasks_to_cancel = []
@@ -254,10 +315,15 @@ class ProjectFileSystemWatcher:
                 for task in tasks_to_cancel:
                     task.cancel()
                 
-                # Wait for tasks to complete
+                # Wait for tasks to complete with timeout protection
                 if tasks_to_cancel:
                     try:
-                        await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+                        await asyncio.wait_for(
+                            asyncio.gather(*tasks_to_cancel, return_exceptions=True),
+                            timeout=self._config.shutdown_timeout_s
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("Timeout waiting for debounce tasks to stop - forcing cleanup")
                     except Exception as e:
                         logger.warning(f"Error waiting for tasks: {e}")
                 
@@ -590,7 +656,7 @@ class ProjectFileSystemWatcher:
                 # Periodic purge of deleted entries
                 current_time = time.time()
                 if current_time - last_purge_time > purge_interval:
-                    cutoff_time = current_time - self._deletion_retention_seconds
+                    cutoff_time = current_time - self._config.deletion_retention_s
                     
                     # Atomic purge under lock
                     async with self._state_lock:
@@ -608,7 +674,7 @@ class ProjectFileSystemWatcher:
                 # Check a sample of files for changes
                 files_to_check = self._iter_project_files()
                 
-                if self._disable_random_sample:
+                if self._config.disable_random_sample:
                     # Test mode: check all files
                     sample_files = files_to_check[:100]  # Limit to 100 even in test mode
                 else:
@@ -754,13 +820,20 @@ class SyncFileSystemEventHandler(FileSystemEventHandler):
             # Watchdog runs in a separate thread, so we need to use call_soon_threadsafe
             # to schedule the coroutine on the main event loop
             if self._event_loop and not self._event_loop.is_closed():
-                # Use call_soon_threadsafe to schedule from watchdog thread to asyncio thread
-                self._event_loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(self.watcher.handle_watchdog_event(event))
-                )
+                try:
+                    # Use call_soon_threadsafe to schedule from watchdog thread to asyncio thread
+                    self._event_loop.call_soon_threadsafe(
+                        lambda: asyncio.create_task(self.watcher.handle_watchdog_event(event))
+                    )
+                except RuntimeError as e:
+                    # Event loop might be closing or closed
+                    if "closed" not in str(e).lower():
+                        self.logger.error(f"Failed to schedule event on loop: {e}")
+                    # Don't spam warnings if event loop is closing
+                    return
             else:
-                # No event loop available, drop the event
-                self.logger.warning(f"No event loop available, dropping event: {event}")
+                # No event loop available, drop the event with less verbose logging
+                self.logger.debug(f"No event loop available, dropping event: {event}")
                 
         except Exception as e:
             self.logger.error(f"Error in watchdog event handler: {e}")

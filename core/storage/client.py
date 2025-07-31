@@ -275,8 +275,7 @@ class HybridQdrantClient:
                         self.client.create_payload_index,
                         collection_name=config.name,
                         field_name=index_config.field_name,
-                        field_schema=PayloadSchemaType.TEXT,
-                        field_index_params=text_index_params
+                        field_schema=text_index_params
                     )
                 else:
                     # Create regular index for non-text fields
@@ -999,12 +998,6 @@ class HybridQdrantClient:
                 processing_time = (time.time() - start_time) * 1000
                 return StorageResult.successful_delete(collection_name, 0, processing_time)
             
-            # Debug: Print ID types to identify the problematic ones
-            logger.error("=" * 80)
-            logger.error(f"DELETE POINTS DEBUG - received {len(point_ids)} IDs:")
-            for i, point_id in enumerate(point_ids):
-                logger.error(f"  ID[{i}]: {point_id} (type: {type(point_id)}, repr: {repr(point_id)})")
-            logger.error("=" * 80)
             
             # Convert IDs to appropriate format for Qdrant
             # Keep the original types as Qdrant client handles both strings and ints

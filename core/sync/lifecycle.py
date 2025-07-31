@@ -16,7 +16,8 @@ from collections import defaultdict
 from ..models.entities import Entity, EntityType
 from ..storage.client import HybridQdrantClient, StorageResult
 from ..models.storage import QdrantPoint
-from ..parser.registry import ParserRegistry
+import core.parser  # Ensure parsers are registered
+from ..parser.registry import parser_registry
 from .deterministic import DeterministicEntityId
 from .events import FileSystemEvent, EventType
 
@@ -322,6 +323,13 @@ class EntityLifecycleManager:
             entities_to_remove = old_entity_ids - new_entity_ids
             entities_to_add = [e for e in updated_entities if e.id not in old_entity_ids]
             
+            print(f"DEBUG: Atomic replacement for {file_path}")
+            print(f"DEBUG: old_entity_ids ({len(old_entity_ids)}): {list(old_entity_ids)[:3]}...")
+            print(f"DEBUG: new_entity_ids ({len(new_entity_ids)}): {list(new_entity_ids)[:3]}...")
+            print(f"DEBUG: entities_to_remove ({len(entities_to_remove)}): {list(entities_to_remove)[:3]}...")
+            print(f"DEBUG: entities_to_add ({len(entities_to_add)}): {len(entities_to_add)}")
+            print(f"DEBUG: entities_unchanged: {len(old_entity_ids & new_entity_ids)}")
+            
             results = {
                 "file_path": file_path,
                 "entities_removed": len(entities_to_remove),
@@ -385,19 +393,29 @@ class EntityLifecycleManager:
             List of extracted entities
         """
         try:
-            # Get the appropriate parser for this file using ParserRegistry
-            registry = ParserRegistry()
-            if not registry.can_parse(file_path):
+            print(f"DEBUG: _parse_file_entities starting for {file_path}")
+            
+            # Get the appropriate parser for this file using the global parser registry
+            print(f"DEBUG: Checking if can parse {file_path.suffix}")
+            if not parser_registry.can_parse(file_path):
+                print(f"DEBUG: No parser available for {file_path}")
                 logger.debug(f"No parser available for {file_path}")
                 return []
             
-            parser = registry.get_parser(file_path)
+            parser = parser_registry.get_parser_for_file(file_path)
+            print(f"DEBUG: Got parser: {type(parser).__name__}")
             if not parser:
+                print(f"DEBUG: Failed to get parser for {file_path}")
                 logger.debug(f"Failed to get parser for {file_path}")
                 return []
             
             # Parse entities from the file
-            entities = await parser.parse_file(file_path)
+            print(f"DEBUG: Parsing file with {type(parser).__name__}")
+            result = parser.parse_file(file_path)
+            entities = result.entities if result.success else []
+            print(f"DEBUG: Parsed {len(entities)} entities from {file_path}")
+            for i, entity in enumerate(entities[:3]):
+                print(f"DEBUG: Entity {i}: {entity.name} ({entity.entity_type})")
             logger.debug(f"Parsed {len(entities)} entities from {file_path}")
             
             return entities

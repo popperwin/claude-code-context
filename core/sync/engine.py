@@ -216,7 +216,13 @@ class ProjectCollectionSyncEngine:
         
         if self.workers:
             try:
-                await asyncio.gather(*self.workers, return_exceptions=True)
+                # Add timeout protection to prevent hanging
+                await asyncio.wait_for(
+                    asyncio.gather(*self.workers, return_exceptions=True),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Timeout waiting for workers to stop - forcing shutdown")
             except Exception as e:
                 logger.warning(f"Error stopping workers: {e}")
         
@@ -320,9 +326,14 @@ class ProjectCollectionSyncEngine:
                     logger.warning(f"Project not found for removal: {project_path}")
                     return True
                 
-                # Stop monitoring
+                # Stop monitoring with timeout protection
                 if project_state.watcher and project_state.is_monitoring:
-                    await project_state.watcher.stop_monitoring()
+                    try:
+                        await asyncio.wait_for(project_state.watcher.stop_monitoring(), timeout=10.0)
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Timeout stopping watcher for {project_path}")
+                    except Exception as e:
+                        logger.warning(f"Error stopping watcher for {project_path}: {e}")
                 
                 # Remove from projects
                 del self.projects[project_key]
