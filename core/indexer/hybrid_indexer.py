@@ -326,33 +326,13 @@ class HybridIndexer:
         Returns:
             The actual collection name created/verified
         """
-        # Create CollectionManager for this project
+        # Create CollectionManager for this project and delegate to it
         collection_manager = CollectionManager(project_name=project_name)
-        collection_name = collection_manager.get_collection_name(collection_type)
-        
-        # Check if collection already exists
-        existing_info = await self.storage_client.get_collection_info(collection_name)
-        
-        if existing_info:
-            logger.debug(f"Collection '{collection_name}' already exists")
-            return collection_name
-        
-        # Create collection with proper schema
-        config = collection_manager.create_collection_config(
+        return await collection_manager.ensure_collection_exists(
             collection_type=collection_type,
+            storage_client=self.storage_client,
             vector_size=self.embedder.dimensions
         )
-        
-        result = await self.storage_client.create_collection(config, recreate=False)
-        
-        if result.success:
-            logger.info(f"Created collection '{collection_name}' for project '{project_name}'")
-        else:
-            error_msg = f"Failed to create collection '{collection_name}': {result.error}"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
-        
-        return collection_name
     
     def add_progress_callback(
         self, 

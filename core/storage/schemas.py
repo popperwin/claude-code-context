@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -480,3 +481,142 @@ class CollectionManager:
         """Clear all cached configurations"""
         self._configs.clear()
         logger.debug("Cleared all collection configurations")
+    
+    async def ensure_collection_exists(
+        self,
+        collection_type: CollectionType,
+        storage_client,  # HybridQdrantClient - avoiding circular import
+        vector_size: int = 1024,
+        distance_metric: DistanceMetric = DistanceMetric.COSINE,
+        custom_config: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Ensure collection exists, creating it if necessary.
+        
+        Args:
+            collection_type: Type of collection to ensure exists
+            storage_client: HybridQdrantClient for storage operations
+            vector_size: Embedding vector dimensions
+            distance_metric: Vector similarity metric
+            custom_config: Optional custom configuration overrides
+            
+        Returns:
+            The actual collection name created/verified
+            
+        Raises:
+            RuntimeError: If collection creation fails
+        """
+        collection_name = self.get_collection_name(collection_type)
+        
+        # Check if collection already exists
+        existing_info = await storage_client.get_collection_info(collection_name)
+        
+        if existing_info:
+            logger.debug(f"Collection '{collection_name}' already exists")
+            return collection_name
+        
+        # Create collection with proper schema
+        config = self.create_collection_config(
+            collection_type=collection_type,
+            vector_size=vector_size,
+            distance_metric=distance_metric,
+            custom_config=custom_config
+        )
+        
+        result = await storage_client.create_collection(config, recreate=False)
+        
+        if result.success:
+            logger.info(f"Created collection '{collection_name}' for project '{self.project_name}'")
+        else:
+            error_msg = f"Failed to create collection '{collection_name}': {result.error}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        return collection_name
+    
+    async def delete_collection(
+        self,
+        collection_type: CollectionType,
+        storage_client  # HybridQdrantClient - avoiding circular import
+    ) -> bool:
+        """
+        Delete a collection.
+        
+        Args:
+            collection_type: Type of collection to delete
+            storage_client: HybridQdrantClient for storage operations
+            
+        Returns:
+            True if deletion was successful, False otherwise
+        """
+        collection_name = self.get_collection_name(collection_type)
+        
+        try:
+            result = await storage_client.delete_collection(collection_name)
+            
+            if result.success:
+                # Clear from cache
+                self._configs.pop(collection_name, None)
+                logger.info(f"Deleted collection '{collection_name}' for project '{self.project_name}'")
+                return True
+            else:
+                logger.error(f"Failed to delete collection '{collection_name}': {result.error}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error deleting collection '{collection_name}': {e}")
+            return False
+    
+    async def get_collection_info(
+        self,
+        collection_type: CollectionType,
+        storage_client  # HybridQdrantClient - avoiding circular import
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get information about a collection.
+        
+        Args:
+            collection_type: Type of collection to get info for
+            storage_client: HybridQdrantClient for storage operations
+            
+        Returns:
+            Collection information dictionary, or None if collection doesn't exist
+        """
+        collection_name = self.get_collection_name(collection_type)
+        
+        try:
+            return await storage_client.get_collection_info(collection_name)
+        except Exception as e:
+            logger.error(f"Error getting collection info for '{collection_name}': {e}")
+            return None
+    
+    async def collection_exists(
+        self,
+        collection_type: CollectionType,
+        storage_client  # HybridQdrantClient - avoiding circular import
+    ) -> bool:
+        """
+        Check if a collection exists.
+        
+        Args:
+            collection_type: Type of collection to check
+            storage_client: HybridQdrantClient for storage operations
+            
+        Returns:
+            True if collection exists, False otherwise
+        """
+        info = await self.get_collection_info(collection_type, storage_client)
+        return info is not None
+    
+    def get_status(self) -> Dict[str, Any]:
+        """
+        Get collection manager status.
+        
+        Returns:
+            Dictionary with collection manager status and metrics
+        """
+        return {
+            "project_name": self.project_name,
+            "cached_configs": len(self._configs),
+            "collection_names": self.get_all_collection_names()
+        }

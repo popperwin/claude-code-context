@@ -17,6 +17,7 @@ from collections import defaultdict
 
 from ..models.entities import Entity, EntityType
 from ..storage.client import HybridQdrantClient
+from ..storage.schemas import CollectionManager, CollectionType
 from ..sync.lifecycle import EntityLifecycleManager
 from ..sync.engine import ProjectCollectionSyncEngine, ProjectSyncState
 from ..sync.events import FileSystemEvent, EventType
@@ -77,7 +78,8 @@ class EntityLifecycleIntegrator:
         project_path: Path,
         collection_name: str,
         enable_real_time_sync: bool = True,
-        batch_size: int = 50
+        batch_size: int = 50,
+        collection_manager: Optional[CollectionManager] = None
     ):
         """
         Initialize entity lifecycle integrator.
@@ -88,12 +90,20 @@ class EntityLifecycleIntegrator:
             collection_name: Name of the collection to manage
             enable_real_time_sync: Whether to enable real-time synchronization
             batch_size: Default batch size for entity operations
+            collection_manager: Optional CollectionManager for collection lifecycle operations
         """
         self.storage_client = storage_client
         self.project_path = Path(project_path).resolve()
         self.collection_name = collection_name
         self.enable_real_time_sync = enable_real_time_sync
         self.batch_size = batch_size
+        
+        # Initialize collection manager for lifecycle operations
+        if collection_manager is None:
+            # Extract project name from collection name (assumes format: "project-name-code")
+            project_name = collection_name.rsplit('-', 1)[0] if '-' in collection_name else collection_name
+            collection_manager = CollectionManager(project_name=project_name)
+        self.collection_manager = collection_manager
         
         # Initialize core components
         self.lifecycle_manager = EntityLifecycleManager(
@@ -126,6 +136,37 @@ class EntityLifecycleIntegrator:
         
         logger.info(f"Initialized EntityLifecycleIntegrator for {project_path} -> {collection_name}")
     
+    async def _ensure_collection_exists(self) -> str:
+        """
+        Ensure the target collection exists before performing operations.
+        
+        This is the critical fix for the "0 results" bug - EntityLifecycleIntegrator
+        must create collections before trying to store entities in them.
+        
+        Returns:
+            The collection name that was ensured to exist
+        """
+        try:
+            collection_name = await self.collection_manager.ensure_collection_exists(
+                collection_type=CollectionType.CODE,
+                storage_client=self.storage_client
+            )
+            
+            # Update our collection name in case it was normalized
+            if collection_name != self.collection_name:
+                logger.info(f"Collection name updated from '{self.collection_name}' to '{collection_name}'")
+                self.collection_name = collection_name
+                
+                # Update lifecycle manager with new collection name
+                self.lifecycle_manager.collection_name = collection_name
+            
+            return collection_name
+            
+        except Exception as e:
+            error_msg = f"Failed to ensure collection exists: {e}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+    
     async def bulk_entity_create(
         self,
         file_paths: List[Path],
@@ -147,6 +188,8 @@ class EntityLifecycleIntegrator:
         logger.info(f"Starting bulk entity creation {operation_id}: {len(file_paths)} files")
         
         try:
+            # CRITICAL FIX: Ensure collection exists before creating entities
+            await self._ensure_collection_exists()
             # Create scan request
             scan_request = EntityScanRequest(
                 file_paths=file_paths,
@@ -173,6 +216,7 @@ class EntityLifecycleIntegrator:
             operation_time_ms = (time.perf_counter() - start_time) * 1000
             self._total_operations_time += operation_time_ms
             self._last_operation_time = datetime.now()
+            
             
             # Update mapping state
             self._mapping_state.total_entities += scan_result.total_entities
@@ -231,6 +275,8 @@ class EntityLifecycleIntegrator:
                    f"change_detection={detect_changes}")
         
         try:
+            # CRITICAL FIX: Ensure collection exists before updating entities
+            await self._ensure_collection_exists()
             entities_updated = 0
             entities_created = 0
             entities_deleted = 0
@@ -239,9 +285,9 @@ class EntityLifecycleIntegrator:
             # Pure entity-level approach - let EntityLifecycleManager handle all optimization
             for i, file_path in enumerate(file_paths):
                 try:
-                    # Handle file modification via lifecycle manager
-                    # EntityLifecycleManager will handle entity-level change detection internally
+                    # CRITICAL FIX: Use absolute paths consistently (entities are stored with absolute paths)
                     absolute_path = file_path.resolve() if not file_path.is_absolute() else file_path
+                    
                     event = FileSystemEvent.create_file_modified(absolute_path)
                     result = await self.lifecycle_manager.handle_file_modification(event)
                     
@@ -327,13 +373,16 @@ class EntityLifecycleIntegrator:
                    f"cascade={cascade_relationships}")
         
         try:
+            # CRITICAL FIX: Ensure collection exists before deleting entities
+            await self._ensure_collection_exists()
             entities_deleted = 0
             
             # Process file deletions
             for file_path in file_paths:
                 try:
-                    # Handle file deletion via lifecycle manager
+                    # CRITICAL FIX: Use absolute paths consistently (entities are stored with absolute paths)
                     absolute_path = file_path.resolve() if not file_path.is_absolute() else file_path
+                    
                     event = FileSystemEvent.create_file_deleted(absolute_path)
                     result = await self.lifecycle_manager.handle_file_deletion(event)
                     
@@ -402,8 +451,15 @@ class EntityLifecycleIntegrator:
         logger.info(f"Starting atomic entity replacement {operation_id}: {file_path}")
         
         try:
+            # CRITICAL FIX: Ensure collection exists before replacing entities
+            await self._ensure_collection_exists()
+            
+            # CRITICAL FIX: Use absolute paths consistently (entities are stored with absolute paths)
+            absolute_path = file_path.resolve() if not file_path.is_absolute() else file_path
+            normalized_path = str(absolute_path)
+            
             # Get existing entities for the file
-            existing_entity_ids = await self.lifecycle_manager._get_entities_for_file(str(file_path))
+            existing_entity_ids = await self.lifecycle_manager._get_entities_for_file(normalized_path)
             
             # Scan for new entities if not provided
             if new_entities is None:
@@ -423,7 +479,7 @@ class EntityLifecycleIntegrator:
                 
             # Perform atomic replacement
             replacement_result = await self.lifecycle_manager.atomic_entity_replacement(
-                str(file_path),
+                normalized_path,
                 existing_entity_ids,
                 new_entities or []
             )
@@ -602,7 +658,8 @@ class EntityLifecycleIntegrator:
                 "lifecycle_manager": self.lifecycle_manager.get_status(),
                 "entity_scanner": self.entity_scanner.get_scanner_stats(),
                 "change_detector": self.change_detector.get_detector_stats() if hasattr(self.change_detector, 'get_detector_stats') else {},
-                "sync_engine": self.sync_engine.get_status() if self.sync_engine else None
+                "sync_engine": self.sync_engine.get_status() if self.sync_engine else None,
+                "collection_manager": self.collection_manager.get_status()
             }
         }
     
