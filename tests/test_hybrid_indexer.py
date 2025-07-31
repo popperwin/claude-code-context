@@ -16,7 +16,7 @@ import logging
 from core.indexer.hybrid_indexer import (
     IndexingJobConfig, IndexingJobMetrics, HybridIndexer
 )
-from core.indexer.incremental import IncrementalIndexer
+
 from core.indexer.cache import CacheManager
 from core.indexer.state_analyzer import CollectionStateAnalyzer, CollectionState, CollectionStateInfo
 from core.indexer.scan_mode import EntityScanModeSelector, EntityScanMode, ScanModeDecision
@@ -69,7 +69,7 @@ class TestIndexingJobConfig:
         
         assert config.project_path == tmp_path
         assert config.project_name == "test-collection"
-        assert config.incremental is True
+
         assert config.max_workers == 4
         assert config.batch_size == 100
         assert config.enable_caching is True
@@ -91,7 +91,7 @@ class TestIndexingJobConfig:
         config = IndexingJobConfig(
             project_path=tmp_path,
             project_name="custom-collection",
-            incremental=False,
+
             max_workers=8,
             batch_size=50,
             include_patterns=custom_include,
@@ -100,7 +100,7 @@ class TestIndexingJobConfig:
             cache_size_mb=1024
         )
         
-        assert config.incremental is False
+
         assert config.max_workers == 8
         assert config.batch_size == 50
         assert config.include_patterns == custom_include
@@ -256,7 +256,7 @@ class TestHybridIndexer:
         assert indexer.storage_client == mock_components["storage"]
         assert indexer.cache_manager == mock_components["cache"]
         assert isinstance(indexer.batch_indexer, BatchIndexer)
-        assert isinstance(indexer.incremental_indexer, IncrementalIndexer)
+
         assert indexer._progress_callbacks == []
     
     @pytest.mark.usefixtures("cleanup_test_collections")
@@ -317,44 +317,7 @@ class TestHybridIndexer:
         assert set(files) == expected_files
         assert metrics.files_discovered == 2
     
-    @pytest.mark.asyncio
-    @pytest.mark.usefixtures("cleanup_test_collections")
-    async def test_filter_incremental_files(self, indexer, tmp_path):
-        """Test incremental file filtering"""
-        all_files = [
-            tmp_path / "file1.py",
-            tmp_path / "file2.py", 
-            tmp_path / "file3.py"
-        ]
-        
-        changed_files = [tmp_path / "file1.py", tmp_path / "file3.py"]
-        
-        # Mock incremental indexer
-        indexer.incremental_indexer = Mock()
-        indexer.incremental_indexer.get_changed_files = AsyncMock(
-            return_value=changed_files
-        )
-        
-        config = IndexingJobConfig(
-            project_path=tmp_path,
-            project_name="test",
-            incremental=True
-        )
-        metrics = IndexingJobMetrics()
-        
-        # Test filtering - need to derive collection name from project name
-        from core.storage.schemas import CollectionManager, CollectionType
-        collection_manager = CollectionManager(project_name=config.project_name)
-        collection_name = collection_manager.get_collection_name(config.collection_type)
-        
-        result = await indexer._filter_incremental_files(all_files, collection_name, metrics)
-        
-        assert result == changed_files
-        assert metrics.files_skipped == 1  # 3 total - 2 changed = 1 skipped
-        indexer.incremental_indexer.get_changed_files.assert_called_once_with(
-            all_files, collection_name
-        )
-    
+
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("cleanup_test_collections")
     async def test_parse_files(self, indexer, mock_components, tmp_path):
@@ -533,7 +496,7 @@ class TestHybridIndexer:
         
         assert call_args.project_path == test_file.parent
         assert call_args.project_name == "test-collection"
-        assert call_args.incremental is False  # force_reindex=True
+
         assert call_args.max_workers == 1
         assert call_args.batch_size == 10
         assert "test.py" in call_args.include_patterns
@@ -593,7 +556,7 @@ class TestHybridIndexerIntegration:
         config = IndexingJobConfig(
             project_path=tmp_path,
             project_name="empty-test",
-            incremental=False
+
         )
         
         # Test indexing
@@ -816,7 +779,7 @@ class TestHybridIndexerEntityLevelOperations:
             project_name="test-entity-full-scan",
             entity_scan_mode="full_rescan",
             enable_entity_monitoring=False,
-            incremental=False
+
         )
         
         # Test full entity scan

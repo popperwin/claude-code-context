@@ -20,7 +20,6 @@ from ..storage.client import HybridQdrantClient
 from ..storage.indexing import BatchIndexer, IndexingResult
 from ..models.entities import Entity, Relation
 from ..storage.schemas import CollectionManager, CollectionType
-from .incremental import IncrementalIndexer, FileChangeDetector
 from .cache import CacheManager
 from .state_analyzer import CollectionStateAnalyzer
 from .scan_mode import EntityScanModeSelector, EntityScanMode
@@ -208,8 +207,6 @@ class HybridIndexer:
             max_retries=3
         )
         
-        # Initialize incremental indexer
-        self.incremental_indexer = IncrementalIndexer()
         
         # Initialize entity-level components
         self.state_analyzer = CollectionStateAnalyzer(
@@ -508,32 +505,6 @@ class HybridIndexer:
         
         return filtered_files
     
-    async def _filter_incremental_files(
-        self,
-        files: List[Path],
-        collection_name: str,
-        metrics: IndexingJobMetrics
-    ) -> List[Path]:
-        """Filter files for incremental indexing"""
-        if not self.incremental_indexer:
-            return files
-        
-        start_time = time.perf_counter()
-        
-        # Get changed files
-        changed_files = await self.incremental_indexer.get_changed_files(
-            files, collection_name
-        )
-        
-        metrics.files_skipped = len(files) - len(changed_files)
-        
-        filter_time = time.perf_counter() - start_time
-        logger.info(
-            f"Incremental filtering: {len(changed_files)}/{len(files)} files "
-            f"need processing ({filter_time:.2f}s)"
-        )
-        
-        return changed_files
     
     async def _parse_files(
         self,
@@ -655,40 +626,6 @@ class HybridIndexer:
         # For now, just log relations - full relation indexing can be added later
         logger.info(f"Found {len(relations)} relations (relation indexing TBD)")
     
-    async def _update_cache_state(
-        self,
-        files: List[Path],
-        collection_name: str,
-        metrics: IndexingJobMetrics
-    ) -> None:
-        """Update cache and incremental state after successful indexing"""
-        # Update file cache entries
-        if self.cache_manager:
-            for file_path in files:
-                try:
-                    await self.cache_manager.update_file_cache(
-                        file_path, collection_name
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to update cache for {file_path}: {e}")
-        
-        # Update incremental indexer state
-        if self.incremental_indexer:
-            # Calculate entities per file (rough estimate)
-            entities_per_file = metrics.entities_indexed // max(metrics.files_processed, 1)
-            relations_per_file = metrics.relations_extracted // max(metrics.files_processed, 1)
-            
-            for file_path in files:
-                try:
-                    await self.incremental_indexer.update_file_state(
-                        file_path=file_path,
-                        collection_name=collection_name,
-                        entity_count=entities_per_file,
-                        relation_count=relations_per_file,
-                        success=True
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to update incremental state for {file_path}: {e}")
     
     async def _perform_full_entity_scan(
         self,

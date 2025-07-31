@@ -13,7 +13,7 @@ from pathlib import Path
 import logging
 
 from core.indexer.hybrid_indexer import HybridIndexer, IndexingJobConfig
-from core.indexer.incremental import IncrementalIndexer
+
 from core.indexer.cache import CacheManager
 from core.storage.schemas import CollectionType, CollectionManager
 from core.parser.registry import ParserRegistry
@@ -815,14 +815,13 @@ class TestRealIndexerIntegration:
                     cache_manager=cache_manager
                 )
                 
-                # Override with real incremental indexer
-                indexer.incremental_indexer = IncrementalIndexer(state_dir=state_dir)
+
                 
                 # Create indexing config
                 config = IndexingJobConfig(
                     project_path=real_project_dir,
                     project_name="real-indexer-test",
-                    incremental=False,  # Full indexing first
+
                     include_patterns=["*.py", "*.js", "*.ts", "*.go"],
                     exclude_patterns=["node_modules/*", ".git/*"],
                     max_workers=2,
@@ -848,22 +847,7 @@ class TestRealIndexerIntegration:
                 # collection_info = await storage_client.get_collection_info(actual_collection_name)
                 # assert collection_info is not None
                 
-                # Test incremental indexing
-                config.incremental = True
-                
-                # Second run should process fewer files (incremental)
-                metrics2 = await indexer.index_project(config, show_progress=False)
-                
-                assert metrics2.files_discovered == metrics.files_discovered
-                assert metrics2.files_skipped >= 0  # Some files should be skipped
-                
-                # Verify incremental state was saved (use proper collection name)
-                from core.storage.schemas import CollectionManager
-                collection_manager = CollectionManager(project_name="real-indexer-test")
-                collection_name = collection_manager.get_collection_name(config.collection_type)
-                stats = await indexer.incremental_indexer.get_collection_stats(collection_name)
-                assert stats["total_files"] > 0
-                assert stats["successful_files"] >= 0
+
                 
             finally:
                 # Cleanup
@@ -873,75 +857,6 @@ class TestRealIndexerIntegration:
                         await cache_manager._cleanup_task
                     except asyncio.CancelledError:
                         pass
-    
-    @pytest.mark.asyncio
-    @pytest.mark.usefixtures("cleanup_test_collections")
-    async def test_real_incremental_behavior(self, real_project_dir):
-        """Test real incremental indexing behavior with file modifications"""
-        
-        with tempfile.TemporaryDirectory() as temp_dir:
-            state_dir = Path(temp_dir) / "state"
-            
-            # Real incremental indexer
-            incremental_indexer = IncrementalIndexer(state_dir=state_dir)
-            
-            # Get real files
-            test_files = [
-                real_project_dir / "main.py",
-                real_project_dir / "utils.py"
-            ]
-            
-            collection_name = "incremental-behavior-test"
-            
-            # First run - all files are new
-            changed_files1 = await incremental_indexer.get_changed_files(
-                test_files, collection_name
-            )
-            
-            assert len(changed_files1) == 2
-            assert all(f in changed_files1 for f in test_files)
-            
-            # Simulate successful indexing
-            for file_path in test_files:
-                await incremental_indexer.update_file_state(
-                    file_path=file_path,
-                    collection_name=collection_name,
-                    entity_count=5,  # Realistic count
-                    relation_count=2,
-                    success=True
-                )
-            
-            # Second run - no changes
-            changed_files2 = await incremental_indexer.get_changed_files(
-                test_files, collection_name
-            )
-            
-            assert len(changed_files2) == 0
-            
-            # Modify main.py with realistic change
-            main_file = real_project_dir / "main.py"
-            original_content = main_file.read_text()
-            modified_content = original_content + "\n\n# Added new comment\nprint('Modified file')\n"
-            main_file.write_text(modified_content)
-            
-            # Wait to ensure different mtime
-            await asyncio.sleep(0.1)
-            
-            # Third run - only modified file detected
-            changed_files3 = await incremental_indexer.get_changed_files(
-                test_files, collection_name
-            )
-            
-            assert len(changed_files3) == 1
-            assert main_file in changed_files3
-            
-            # Verify stats are realistic
-            stats = await incremental_indexer.get_collection_stats(collection_name)
-            assert stats["total_files"] == 2
-            assert stats["successful_files"] == 2
-            assert stats["total_entities"] == 10  # 2 files * 5 entities
-            assert stats["total_relations"] == 4   # 2 files * 2 relations
-            assert stats["success_rate"] == 1.0
     
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("cleanup_test_collections")
