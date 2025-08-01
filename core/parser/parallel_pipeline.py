@@ -16,7 +16,7 @@ import logging
 import os
 import pickle
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Callable, Tuple, Union
@@ -160,34 +160,96 @@ def _parse_file_batch(request: BatchParseRequest) -> BatchParseResult:
     )
 
 
+def _parse_file_single(file_path: Path, registry: ParserRegistry) -> ParseResult:
+    """
+    Parse a single file for thread-based execution.
+    
+    This function is used with ThreadPoolExecutor and doesn't need to be pickleable.
+    It can access the shared parser registry directly.
+    """
+    try:
+        # Get parser for this file
+        parser = registry.get_parser_for_file(file_path)
+        if parser is None:
+            # Create a failed result
+            result = ParseResult(
+                file_path=file_path,
+                language="unknown",
+                entities=[],
+                relations=[],
+                ast_nodes=[],
+                parse_time=0.0,
+                file_size=0,
+                file_hash=""
+            )
+            result.add_syntax_error({
+                "type": "NO_PARSER",
+                "message": "No parser available",
+                "line": 0,
+                "column": 0
+            })
+            return result
+        
+        # Parse the file
+        return parser.parse_file(file_path)
+        
+    except Exception as e:
+        # Create a failed result with exception info
+        result = ParseResult(
+            file_path=file_path,
+            language="unknown", 
+            entities=[],
+            relations=[],
+            ast_nodes=[],
+            parse_time=0.0,
+            file_size=0,
+            file_hash=""
+        )
+        result.add_syntax_error({
+            "type": "EXCEPTION",
+            "message": str(e),
+            "line": 0,
+            "column": 0
+        })
+        return result
+
+
 class ProcessParsingPipeline:
     """
-    High-performance parsing pipeline using ProcessPoolExecutor.
+    High-performance parsing pipeline with dual execution modes.
     
-    Uses multiprocessing to achieve true parallelism for CPU-intensive
-    Tree-sitter parsing and entity extraction operations.
+    Supports both ThreadPoolExecutor (default, faster for small tasks) and 
+    ProcessPoolExecutor (CPU-intensive workloads) for optimal performance 
+    based on workload characteristics.
+    
+    Thread mode: Faster startup, shared memory, better for <100 files
+    Process mode: True parallelism, isolated processes, better for large workloads
     """
     
     def __init__(
         self,
         max_workers: Optional[int] = None,
         batch_size: int = 10,
-        timeout: float = 300.0  # 5 minutes per batch
+        timeout: float = 300.0,  # 5 minutes per batch
+        execution_mode: str = "process" # "thread" or "process"
     ):
         """
         Initialize the parsing pipeline.
         
         Args:
-            max_workers: Maximum number of worker processes (default: CPU count + 4)
+            max_workers: Maximum number of workers (default: CPU count + 4)
             batch_size: Number of files per batch (default: 10)
             timeout: Timeout in seconds for each batch (default: 300)
+            execution_mode: Execution mode - "process" (defatult, CPU-intensive) or "thread" (faster for large tasks)
         """
         self.max_workers = max_workers or min(32, (os.cpu_count() or 1) + 4)
         self.batch_size = batch_size
         self.timeout = timeout
+        self.execution_mode = execution_mode
         self.registry = parser_registry
         
-        logger.info(f"Initialized ProcessParsingPipeline with {self.max_workers} workers, batch size {self.batch_size}")
+        mode_desc = "threads (faster startup)" if execution_mode == "thread" else "processes (true parallelism)"
+        logger.info(f"Initialized ProcessParsingPipeline with {self.max_workers} workers using {mode_desc}, batch size {self.batch_size}")
     
     def create_batches(self, file_paths: List[Path]) -> List[List[Path]]:
         """
@@ -245,51 +307,91 @@ class ProcessParsingPipeline:
         
         all_results = []
         
-        # Process batches in parallel
-        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all batch parsing tasks
-            future_to_batch = {
-                executor.submit(_parse_file_batch, request): request
-                for request in batch_requests
-            }
-            
-            logger.info(f"Submitted {len(future_to_batch)} batches to {self.max_workers} workers")
-            
-            # Process completed batches
-            for future in as_completed(future_to_batch, timeout=self.timeout):
-                request = future_to_batch[future]
+        if self.execution_mode == "thread":
+            # Use ThreadPoolExecutor for faster startup with individual files
+            executor_class = ThreadPoolExecutor
+            with executor_class(max_workers=self.max_workers) as executor:
+                # Submit individual file parsing tasks 
+                future_to_file = {
+                    executor.submit(_parse_file_single, file_path, self.registry): file_path
+                    for file_path in file_paths
+                }
                 
-                try:
-                    batch_result = future.result()
-                    all_results.extend(batch_result.results)
+                logger.info(f"Submitted {len(future_to_file)} files to {self.max_workers} thread workers")
+                
+                # Process completed files
+                for future in as_completed(future_to_file, timeout=self.timeout):
+                    file_path = future_to_file[future]
                     
-                    # Update stats
-                    stats.processed_files += len(request.file_paths)
-                    stats.successful_files += batch_result.success_count
-                    stats.failed_files += batch_result.failure_count
-                    stats.total_entities += batch_result.total_entities
-                    stats.total_relations += batch_result.total_relations
-                    stats.batches_processed += 1
+                    try:
+                        result = future.result()
+                        all_results.append(result)
+                        
+                        # Update stats
+                        stats.processed_files += 1
+                        if result.success:
+                            stats.successful_files += 1
+                            stats.total_entities += len(result.entities)
+                            stats.total_relations += len(result.relations)
+                        else:
+                            stats.failed_files += 1
+                        
+                        # Progress callback
+                        if progress_callback and stats.processed_files % 10 == 0:
+                            progress_callback(stats.processed_files, stats.total_files, stats)
+                        
+                    except Exception as e:
+                        # Handle file failure
+                        stats.failed_files += 1
+                        logger.error(f"Error processing {file_path}: {e}")
+        
+        else:
+            # Use ProcessPoolExecutor for CPU-intensive workloads
+            executor_class = ProcessPoolExecutor
+            with executor_class(max_workers=self.max_workers) as executor:
+                # Submit all batch parsing tasks
+                future_to_batch = {
+                    executor.submit(_parse_file_batch, request): request
+                    for request in batch_requests
+                }
+                
+                logger.info(f"Submitted {len(future_to_batch)} batches to {self.max_workers} process workers")
+                
+                # Process completed batches
+                for future in as_completed(future_to_batch, timeout=self.timeout):
+                    request = future_to_batch[future]
                     
-                    # Progress callback
-                    if progress_callback:
-                        progress_callback(stats.processed_files, stats.total_files, stats)
-                    
-                    logger.debug(
-                        f"Batch {batch_result.batch_id} completed: "
-                        f"{batch_result.success_count}/{len(request.file_paths)} files, "
-                        f"{batch_result.total_entities} entities in {batch_result.parse_time:.2f}s"
-                    )
-                    
-                except Exception as e:
-                    # Handle batch failure
-                    stats.failed_files += len(request.file_paths)
-                    stats.processed_files += len(request.file_paths)
-                    
-                    logger.error(f"Batch {request.batch_id} failed: {e}")
-                    
-                    if progress_callback:
-                        progress_callback(stats.processed_files, stats.total_files, stats)
+                    try:
+                        batch_result = future.result()
+                        all_results.extend(batch_result.results)
+                        
+                        # Update stats
+                        stats.processed_files += len(request.file_paths)
+                        stats.successful_files += batch_result.success_count
+                        stats.failed_files += batch_result.failure_count
+                        stats.total_entities += batch_result.total_entities
+                        stats.total_relations += batch_result.total_relations
+                        stats.batches_processed += 1
+                        
+                        # Progress callback
+                        if progress_callback:
+                            progress_callback(stats.processed_files, stats.total_files, stats)
+                        
+                        logger.debug(
+                            f"Batch {batch_result.batch_id} completed: "
+                            f"{batch_result.success_count}/{len(request.file_paths)} files, "
+                            f"{batch_result.total_entities} entities in {batch_result.parse_time:.2f}s"
+                        )
+                        
+                    except Exception as e:
+                        # Handle batch failure
+                        stats.failed_files += len(request.file_paths)
+                        stats.processed_files += len(request.file_paths)
+                        
+                        logger.error(f"Batch {request.batch_id} failed: {e}")
+                        
+                        if progress_callback:
+                            progress_callback(stats.processed_files, stats.total_files, stats)
         
         # Finalize stats
         stats.total_time = time.perf_counter() - start_time
