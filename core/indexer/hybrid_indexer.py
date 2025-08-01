@@ -7,10 +7,11 @@ into a unified, high-performance pipeline with progress tracking and error handl
 
 import asyncio
 import logging
+import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Callable, Union
+from typing import List, Dict, Any, Optional, Callable, Union, Set, Tuple
 from dataclasses import dataclass, field
 
 from ..parser.parallel_pipeline import ProcessParsingPipeline, PipelineStats
@@ -18,6 +19,7 @@ from ..parser.base import ParseResult
 from ..embeddings.stella import StellaEmbedder
 from ..storage.client import HybridQdrantClient
 from ..storage.indexing import BatchIndexer, IndexingResult
+from ..storage.utils import entity_id_to_qdrant_id
 from ..models.entities import Entity, Relation
 from ..storage.schemas import CollectionManager, CollectionType
 from .cache import CacheManager
@@ -25,6 +27,73 @@ from .state_analyzer import CollectionStateAnalyzer
 from .scan_mode import EntityScanModeSelector, EntityScanMode
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class WorkspaceState:
+    """
+    Represents the current state of files in a workspace.
+    
+    This class captures file modification times and metadata for
+    delta-scan comparison operations.
+    """
+    file_path: str
+    mtime: float  # Modification timestamp
+    size: int     # File size in bytes
+    is_parseable: bool = True
+    
+    @classmethod
+    def from_file_path(cls, file_path: Path) -> Optional['WorkspaceState']:
+        """
+        Create WorkspaceState from a file path.
+        
+        Args:
+            file_path: Path to the file
+            
+        Returns:
+            WorkspaceState instance or None if file doesn't exist
+        """
+        try:
+            if not file_path.exists():
+                return None
+                
+            stat = file_path.stat()
+            return cls(
+                file_path=str(file_path),
+                mtime=stat.st_mtime,
+                size=stat.st_size,
+                is_parseable=True  # Will be determined by parser registry
+            )
+        except (OSError, IOError) as e:
+            logger.warning(f"Failed to get file stats for {file_path}: {e}")
+            return None
+
+
+@dataclass
+class DeltaScanResult:
+    """
+    Result of a delta scan operation comparing workspace and collection states.
+    """
+    added_files: Set[str] = field(default_factory=set)
+    modified_files: Set[str] = field(default_factory=set)
+    deleted_files: Set[str] = field(default_factory=set)
+    unchanged_files: Set[str] = field(default_factory=set)
+    scan_time: float = 0.0
+    total_workspace_files: int = 0
+    total_collection_entities: int = 0
+    
+    @property
+    def total_changes(self) -> int:
+        """Total number of changes detected"""
+        return len(self.added_files) + len(self.modified_files) + len(self.deleted_files)
+    
+    @property
+    def change_ratio(self) -> float:
+        """Ratio of changed files to total files"""
+        total_files = self.total_workspace_files
+        if total_files == 0:
+            return 0.0
+        return self.total_changes / total_files
 
 
 @dataclass
@@ -878,6 +947,556 @@ class HybridIndexer:
             logger.error(f"Error during shutdown: {e}")
         
         logger.info("HybridIndexer shutdown complete")
+    
+    async def fast_scan_workspace(
+        self,
+        project_path: Path,
+        tolerance_sec: float = 1.0
+    ) -> Dict[str, WorkspaceState]:
+        """
+        Fast filesystem traversal using os.scandir for optimal performance.
+        
+        This function performs a high-speed directory traversal using os.scandir(),
+        which is significantly faster than Path.rglob() for large directory trees.
+        It captures file modification times and metadata for delta-scan comparison.
+        
+        Args:
+            project_path: Root directory to scan
+            tolerance_sec: Time tolerance for modification detection (default: 1.0s)
+            
+        Returns:
+            Dictionary mapping file paths to WorkspaceState objects
+        """
+        start_time = time.perf_counter()
+        workspace_state = {}
+        
+        # Get parser registry for file type detection
+        parser_registry = self.parser_pipeline.registry
+        
+        def scan_directory_recursive(dir_path: Path) -> None:
+            """Recursive directory scanning using os.scandir for performance"""
+            try:
+                with os.scandir(str(dir_path)) as entries:
+                    for entry in entries:
+                        try:
+                            # Skip hidden files and common ignore patterns
+                            if entry.name.startswith('.'):
+                                continue
+                            
+                            # Skip common build/cache directories for performance
+                            if entry.name in {
+                                'node_modules', '__pycache__', '.git', '.svn', '.hg',
+                                'build', 'dist', '.cache', '.pytest_cache', '.mypy_cache',
+                                'venv', '.venv', 'env', '.env'
+                            }:
+                                continue
+                            
+                            entry_path = Path(entry.path)
+                            
+                            if entry.is_dir(follow_symlinks=False):
+                                # Recursively scan subdirectories
+                                scan_directory_recursive(entry_path)
+                                
+                            elif entry.is_file(follow_symlinks=False):
+                                # Check if file is parseable using the registry
+                                if not parser_registry.can_parse(entry_path):
+                                    continue
+                                
+                                # Get file stats efficiently using DirEntry
+                                stat_result = entry.stat(follow_symlinks=False)
+                                
+                                # Create workspace state
+                                workspace_state[str(entry_path)] = WorkspaceState(
+                                    file_path=str(entry_path),
+                                    mtime=stat_result.st_mtime,
+                                    size=stat_result.st_size,
+                                    is_parseable=True
+                                )
+                                
+                        except (OSError, IOError) as e:
+                            logger.debug(f"Skipping entry {entry.name}: {e}")
+                            continue
+                            
+            except (OSError, IOError, PermissionError) as e:
+                logger.warning(f"Cannot scan directory {dir_path}: {e}")
+        
+        # Perform the recursive scan
+        try:
+            scan_directory_recursive(project_path)
+        except Exception as e:
+            logger.error(f"Error during workspace scan: {e}")
+            raise
+        
+        scan_time = time.perf_counter() - start_time
+        
+        logger.info(
+            f"Fast workspace scan completed: {len(workspace_state)} parseable files "
+            f"found in {scan_time:.3f}s ({len(workspace_state)/scan_time:.1f} files/sec)"
+        )
+        
+        return workspace_state
+    
+    async def get_collection_state(
+        self,
+        collection_name: str,
+        chunk_size: int = 1000
+    ) -> Dict[str, Any]:
+        """
+        Get current state of entities in Qdrant collection using scroll operations.
+        
+        This function uses Qdrant scroll API to efficiently retrieve entity metadata
+        for delta-scan comparison. It processes entities in chunks to handle large
+        collections without memory issues.
+        
+        Args:
+            collection_name: Name of the Qdrant collection to scan
+            chunk_size: Number of entities to process per scroll chunk (default: 1000)
+            
+        Returns:
+            Dictionary containing collection state with entity metadata mapped by file_path
+        """
+        start_time = time.perf_counter()
+        
+        logger.info(f"Starting collection state scan: {collection_name}")
+        
+        try:
+            # Get collection info first
+            collection_info = await self.storage_client.get_collection_info(collection_name)
+            if not collection_info:
+                logger.warning(f"Collection {collection_name} does not exist")
+                return {
+                    "exists": False,
+                    "entities": {},
+                    "entity_count": 0,
+                    "file_count": 0,
+                    "scan_time": 0.0,
+                    "error": f"Collection {collection_name} not found"
+                }
+            
+            total_points = collection_info.get("points_count", 0)
+            logger.info(f"Collection {collection_name} contains {total_points} points")
+            
+            # Initialize state tracking
+            entities_by_file = {}  # file_path -> list of entity metadata
+            entity_count = 0
+            
+            # Use shared scroll method to iterate through all points
+            async for point in self._scroll_collection_points(collection_name, chunk_size):
+                try:
+                    payload = point.payload or {}
+                    file_path = payload.get('file_path')
+                    
+                    if not file_path:
+                        logger.debug(f"Entity {point.id} missing file_path in payload")
+                        continue
+                    
+                    # Extract entity metadata for delta comparison
+                    entity_metadata = {
+                        'entity_id': payload.get('entity_id', str(point.id)),
+                        'indexed_at': payload.get('indexed_at'),
+                        'entity_type': payload.get('entity_type'),
+                        'name': payload.get('entity_name', payload.get('name')),
+                        'qualified_name': payload.get('qualified_name'),
+                        'file_hash': payload.get('file_hash'),
+                        'location': payload.get('location', {}),
+                        'last_modified': payload.get('last_modified')
+                    }
+                    
+                    # Group entities by file for efficient comparison
+                    if file_path not in entities_by_file:
+                        entities_by_file[file_path] = []
+                    entities_by_file[file_path].append(entity_metadata)
+                    
+                    entity_count += 1
+                    
+                    # Log progress for large collections
+                    if entity_count % 10000 == 0:
+                        logger.info(f"Processed {entity_count} entities so far")
+                    
+                except Exception as e:
+                    logger.warning(f"Error processing entity {point.id}: {e}")
+                    continue
+            
+            scan_time = time.perf_counter() - start_time
+            file_count = len(entities_by_file)
+            
+            logger.info(
+                f"Collection state scan completed: {entity_count} entities "
+                f"across {file_count} files in {scan_time:.3f}s "
+                f"({entity_count/scan_time:.1f} entities/sec)"
+            )
+            
+            return {
+                "exists": True,
+                "entities": entities_by_file,
+                "entity_count": entity_count,
+                "file_count": file_count,
+                "scan_time": scan_time,
+                "collection_info": {
+                    "points_count": total_points,
+                    "vectors_count": collection_info.get("vectors_count", 0),
+                    "status": collection_info.get("status"),
+                    "optimizer_status": collection_info.get("optimizer_status")
+                }
+            }
+            
+        except Exception as e:
+            scan_time = time.perf_counter() - start_time
+            error_msg = f"Error scanning collection {collection_name}: {e}"
+            logger.error(error_msg)
+            
+            return {
+                "exists": False,
+                "entities": {},
+                "entity_count": 0,
+                "file_count": 0,
+                "scan_time": scan_time,
+                "error": error_msg
+            }
+    
+    async def calculate_delta(
+        self,
+        workspace_state: Dict[str, WorkspaceState],
+        collection_state: Dict[str, Any],
+        tolerance_sec: float = 1.0
+    ) -> DeltaScanResult:
+        """
+        Calculate delta between workspace files and indexed entities.
+        
+        Compares file modification times with entity indexed_at timestamps to determine:
+        - Added files: Exist in workspace but not in collection
+        - Modified files: Files newer than their indexed entities (considering tolerance)
+        - Deleted files: Files in collection but missing from workspace
+        - Unchanged files: Files that haven't changed since indexing
+        
+        Args:
+            workspace_state: File metadata from fast_scan_workspace()
+            collection_state: Entity metadata from get_collection_state()
+            tolerance_sec: Grace period for timestamp comparison (default: 1.0 seconds)
+            
+        Returns:
+            DeltaScanResult with categorized file changes
+        """
+        start_time = time.perf_counter()
+        
+        logger.info(f"Starting delta calculation with {len(workspace_state)} workspace files")
+        
+        # Extract entities by file from collection state
+        collection_entities = collection_state.get("entities", {})
+        
+        # Initialize result sets
+        added_files = set()
+        modified_files = set()
+        deleted_files = set()
+        unchanged_files = set()
+        
+        # Get all file paths from both sources
+        workspace_files = set(workspace_state.keys())
+        collection_files = set(collection_entities.keys())
+        
+        logger.debug(f"Workspace files: {len(workspace_files)}, Collection files: {len(collection_files)}")
+        
+        # Find added files: in workspace but not in collection
+        added_files = workspace_files - collection_files
+        logger.debug(f"Added files: {len(added_files)}")
+        
+        # Find deleted files: in collection but not in workspace
+        deleted_files = collection_files - workspace_files
+        logger.debug(f"Deleted files: {len(deleted_files)}")
+        
+        # Check files that exist in both for modifications
+        common_files = workspace_files & collection_files
+        logger.debug(f"Common files to check for modifications: {len(common_files)}")
+        
+        for file_path in common_files:
+            try:
+                workspace_file = workspace_state[file_path]
+                collection_file_entities = collection_entities[file_path]
+                
+                # Get the most recent indexed_at timestamp from all entities in this file
+                indexed_timestamps = []
+                for entity in collection_file_entities:
+                    indexed_at = entity.get('indexed_at')
+                    if indexed_at:
+                        indexed_timestamps.append(indexed_at)
+                
+                if not indexed_timestamps:
+                    # No indexed_at timestamps found, treat as modified to be safe
+                    logger.warning(f"No indexed_at timestamps found for {file_path}, treating as modified")
+                    modified_files.add(file_path)
+                    continue
+                
+                # Use the most recent indexed timestamp
+                latest_indexed_at = max(indexed_timestamps)
+                file_mtime = workspace_file.mtime
+                
+                # Compare timestamps with tolerance
+                # File is modified if its mtime is significantly newer than indexed_at
+                time_diff = file_mtime - latest_indexed_at
+                
+                if time_diff > tolerance_sec:
+                    modified_files.add(file_path)
+                    logger.debug(f"Modified: {file_path} (mtime: {file_mtime}, indexed: {latest_indexed_at}, diff: {time_diff:.3f}s)")
+                else:
+                    unchanged_files.add(file_path)
+                    logger.debug(f"Unchanged: {file_path} (diff: {time_diff:.3f}s within tolerance)")
+                    
+            except Exception as e:
+                logger.warning(f"Error processing {file_path} for modifications: {e}")
+                # When in doubt, treat as modified to ensure data consistency
+                modified_files.add(file_path)
+        
+        scan_time = time.perf_counter() - start_time
+        
+        # Create result
+        result = DeltaScanResult(
+            added_files=added_files,
+            modified_files=modified_files,
+            deleted_files=deleted_files,
+            unchanged_files=unchanged_files,
+            scan_time=scan_time,
+            total_workspace_files=len(workspace_files),
+            total_collection_entities=collection_state.get("entity_count", 0)
+        )
+        
+        logger.info(
+            f"Delta calculation completed in {scan_time:.3f}s: "
+            f"{len(added_files)} added, {len(modified_files)} modified, "
+            f"{len(deleted_files)} deleted, {len(unchanged_files)} unchanged files"
+        )
+        
+        return result
+    
+    async def _scroll_collection_points(
+        self,
+        collection_name: str,
+        chunk_size: int = 1000,
+        process_callback = None
+    ):
+        """
+        Shared method to scroll through all points in a collection.
+        
+        Args:
+            collection_name: Name of the collection to scroll
+            chunk_size: Number of points per scroll chunk
+            process_callback: Optional callback function to process each point
+                            Should accept (point, state) and can modify state
+            
+        Yields:
+            Individual points from the collection
+        """
+        next_page_offset = None
+        
+        while True:
+            # Scroll through entities in chunks
+            scroll_result = await asyncio.to_thread(
+                self.storage_client.client.scroll,
+                collection_name=collection_name,
+                limit=chunk_size,
+                offset=next_page_offset,
+                with_payload=True,
+                with_vectors=False
+            )
+            
+            # scroll returns (points, next_page_offset)
+            points, next_page_offset = scroll_result
+            
+            if not points:
+                break
+            
+            # Yield each point
+            for point in points:
+                yield point
+                
+            # If no next page, we're done
+            if next_page_offset is None:
+                break
+
+    async def _validate_stale_entities_batch(
+        self,
+        collection_name: str,
+        entity_ids: List[str],
+        cutoff_timestamp: float
+    ) -> List[str]:
+        """
+        Validate that entities are still stale at operation time to prevent race conditions.
+        
+        Uses shared scroll method to retrieve all points and validate staleness timestamps.
+        
+        Args:
+            collection_name: Name of the collection
+            entity_ids: List of entity IDs to validate  
+            cutoff_timestamp: Timestamp threshold for staleness
+            
+        Returns:
+            List of entity IDs that are still stale (safe to delete)
+        """
+        if not entity_ids:
+            return []
+        
+        try:
+            validated_ids = []
+            target_entity_ids = set(entity_ids)
+            
+            # Use shared scroll method to iterate through all points
+            async for point in self._scroll_collection_points(collection_name, chunk_size=1000):
+                if point.payload and isinstance(point.payload, dict):
+                    entity_id = point.payload.get("entity_id")
+                    if entity_id and entity_id in target_entity_ids:
+                        indexed_at = point.payload.get("indexed_at", 0)
+                        if indexed_at < cutoff_timestamp:
+                            validated_ids.append(entity_id)
+                
+                # Early termination if we've found all target entities
+                if len(validated_ids) == len(target_entity_ids):
+                    break
+            
+            logger.debug(
+                f"Validated {len(validated_ids)}/{len(entity_ids)} stale entities "
+                f"in collection {collection_name}"
+            )
+            
+            return validated_ids
+            
+        except Exception as e:
+            logger.error(f"Error validating stale entities: {e}")
+            return []
+    
+    async def _chunked_entity_delete(
+        self,
+        collection_name: str,
+        stale_entity_ids: List[str],
+        cutoff_timestamp: float,
+        chunk_size: int = 10000
+    ) -> Dict[str, Any]:
+        """
+        Delete stale entities in chunks with validation-based coordination.
+        
+        This method implements chunked deletion with 10k entity batching to respect
+        Qdrant limits, using validation-at-operation-time to prevent race conditions
+        with real-time updates.
+        
+        Args:
+            collection_name: Target collection name
+            stale_entity_ids: List of potentially stale entity IDs
+            cutoff_timestamp: Timestamp threshold for staleness validation
+            chunk_size: Number of entities per deletion chunk (default 10k)
+            
+        Returns:
+            Dictionary with deletion results and metrics
+        """
+        if not stale_entity_ids:
+            return {
+                "success": True,
+                "total_entities": 0,
+                "deleted_entities": 0,
+                "validated_chunks": 0,
+                "skipped_entities": 0,
+                "errors": []
+            }
+        
+        start_time = time.perf_counter()
+        total_deleted = 0
+        validated_chunks = 0
+        skipped_entities = 0
+        errors = []
+        
+        logger.info(
+            f"Starting chunked deletion of {len(stale_entity_ids)} stale entities "
+            f"in {collection_name} (chunk_size={chunk_size})"
+        )
+        
+        try:
+            # Process entities in chunks
+            chunks = self._chunk_list(stale_entity_ids, chunk_size)
+            
+            for chunk_idx, chunk in enumerate(chunks):
+                try:
+                    # CRITICAL: Validate staleness at operation time to prevent race conditions
+                    validated_ids = await self._validate_stale_entities_batch(
+                        collection_name, chunk, cutoff_timestamp
+                    )
+                    
+                    if not validated_ids:
+                        skipped_entities += len(chunk)
+                        logger.debug(f"Chunk {chunk_idx + 1}: No stale entities found, skipping")
+                        continue
+                    
+                    validated_chunks += 1
+                    
+                    # Convert entity IDs to point IDs for Qdrant deletion
+                    # Use centralized normalization function for consistency
+                    point_ids = [entity_id_to_qdrant_id(eid) for eid in validated_ids]
+                    
+                    # Leverage existing chunked delete infrastructure
+                    delete_result = await self.storage_client.delete_points(
+                        collection_name=collection_name,
+                        point_ids=point_ids
+                    )
+                    
+                    if delete_result.success:
+                        chunk_deleted = len(validated_ids)
+                        total_deleted += chunk_deleted
+                        skipped_entities += len(chunk) - len(validated_ids)
+                        
+                        logger.debug(
+                            f"Chunk {chunk_idx + 1}/{len(chunks)}: "
+                            f"Deleted {chunk_deleted} entities "
+                            f"(validated {len(validated_ids)}/{len(chunk)})"
+                        )
+                    else:
+                        error_msg = f"Chunk {chunk_idx + 1} deletion failed: {delete_result.error}"
+                        errors.append(error_msg)
+                        logger.error(error_msg)
+                        skipped_entities += len(chunk)
+                
+                except Exception as e:
+                    error_msg = f"Error processing chunk {chunk_idx + 1}: {e}"
+                    errors.append(error_msg)
+                    logger.error(error_msg)
+                    skipped_entities += len(chunk)
+                    continue
+        
+        except Exception as e:
+            error_msg = f"Fatal error in chunked deletion: {e}"
+            errors.append(error_msg)
+            logger.error(error_msg)
+        
+        processing_time = time.perf_counter() - start_time
+        
+        result = {
+            "success": len(errors) == 0,
+            "total_entities": len(stale_entity_ids),
+            "deleted_entities": total_deleted,
+            "validated_chunks": validated_chunks,
+            "skipped_entities": skipped_entities,
+            "processing_time_ms": processing_time * 1000,
+            "errors": errors
+        }
+        
+        logger.info(
+            f"Chunked deletion complete: {total_deleted}/{len(stale_entity_ids)} entities "
+            f"deleted in {processing_time:.3f}s ({validated_chunks} chunks validated)"
+        )
+        
+        return result
+    
+    def _chunk_list(self, items: List[Any], chunk_size: int) -> List[List[Any]]:
+        """
+        Split a list into chunks of specified size.
+        
+        Args:
+            items: List to chunk
+            chunk_size: Maximum size per chunk
+            
+        Returns:
+            List of chunks
+        """
+        chunks = []
+        for i in range(0, len(items), chunk_size):
+            chunks.append(items[i:i + chunk_size])
+        return chunks
+    
     
     def get_performance_metrics(self) -> Dict[str, Any]:
         """Get overall performance metrics from all components"""

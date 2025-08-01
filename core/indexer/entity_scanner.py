@@ -24,6 +24,7 @@ from ..parser.parallel_pipeline import ProcessParsingPipeline, PipelineStats
 from ..sync.lifecycle import EntityLifecycleManager
 from ..sync.deterministic import DeterministicEntityId
 from ..storage.client import HybridQdrantClient
+from ..storage.utils import entity_id_to_qdrant_id
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ class EntityScanResult:
     success_rate: float
     errors: List[Dict[str, Any]] = field(default_factory=list)
     performance_metrics: Dict[str, Any] = field(default_factory=dict)
+    entities: Optional[List[Entity]] = None  # Only populated in parse_only mode
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -249,7 +251,8 @@ class EntityScanner:
                     "batch_size": request.batch_size,
                     "max_workers": self.max_workers,
                     "pipeline_stats": pipeline_stats.__dict__ if pipeline_stats else {}
-                }
+                },
+                entities=all_entities if request.scan_mode == "parse_only" else None
             )
             
             # Store performance metrics
@@ -493,7 +496,7 @@ class EntityScanner:
                 qdrant_points = []
                 for entity in updated_entities:
                     point = QdrantPoint(
-                        id=entity.id,
+                        id=entity_id_to_qdrant_id(entity.id),
                         vector=[0.0] * 1024,  # Placeholder vector
                         payload=entity.to_qdrant_payload()
                     )
@@ -510,7 +513,7 @@ class EntityScanner:
                 qdrant_points = []
                 for entity in updated_entities:
                     point = QdrantPoint(
-                        id=entity.id,
+                        id=entity_id_to_qdrant_id(entity.id),
                         vector=[0.0] * 1024,  # Placeholder vector
                         payload=entity.to_qdrant_payload()
                     )

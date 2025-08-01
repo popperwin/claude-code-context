@@ -16,6 +16,7 @@ from collections import defaultdict
 from ..models.entities import Entity, EntityType
 from ..storage.client import HybridQdrantClient, StorageResult
 from ..models.storage import QdrantPoint
+from ..storage.utils import entity_id_to_qdrant_id
 import core.parser  # Ensure parsers are registered
 from ..parser.registry import parser_registry
 from .deterministic import DeterministicEntityId
@@ -337,14 +338,14 @@ class EntityLifecycleManager:
             if entities_to_remove:
                 logger.debug(f"Removing {len(entities_to_remove)} entities from {file_path}")
                 
-                # Delete by entity IDs
-                for entity_id in entities_to_remove:
-                    delete_result = await self.storage_client.delete_points(
-                        self.collection_name,
-                        [entity_id]
-                    )
-                    if not delete_result.success:
-                        logger.warning(f"Failed to delete entity {entity_id}: {delete_result.error}")
+                # Delete by converting entity IDs to point IDs
+                point_ids_to_delete = [entity_id_to_qdrant_id(entity_id) for entity_id in entities_to_remove]
+                delete_result = await self.storage_client.delete_points(
+                    self.collection_name,
+                    point_ids_to_delete
+                )
+                if not delete_result.success:
+                    logger.warning(f"Failed to delete entities {entities_to_remove}: {delete_result.error}")
             
             # Add new entities
             if entities_to_add:
@@ -428,7 +429,7 @@ class EntityLifecycleManager:
             qdrant_points = []
             for entity in entities:
                 qdrant_point = QdrantPoint(
-                    id=entity.id,
+                    id=entity_id_to_qdrant_id(entity.id),
                     vector=[0.0] * 1024,  # Placeholder vector, will be computed by storage client
                     payload=entity.to_qdrant_payload()
                 )
@@ -471,7 +472,7 @@ class EntityLifecycleManager:
                 limit=100000
             )
             
-            entity_ids = {str(point.id) for point in points if point.id}
+            entity_ids = {point.payload.get('entity_id') for point in points if point.payload.get('entity_id')}
             
             logger.debug(f"Found {len(entity_ids)} entities for {file_path}")
             return entity_ids

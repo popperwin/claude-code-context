@@ -21,6 +21,7 @@ from typing import List, Dict, Set
 from core.models.entities import Entity, EntityType, SourceLocation
 from core.sync.validator import CollectionConsistencyValidator, ValidationResult, ConsistencyIssue, ValidationStatus
 from core.storage.client import HybridQdrantClient
+from core.storage.utils import entity_id_to_qdrant_id
 from core.models.storage import QdrantPoint, SearchResult
 
 
@@ -98,7 +99,7 @@ class TestCollectionConsistencyValidator:
     ) -> SearchResult:
         """Create a mock SearchResult object for testing."""
         point = QdrantPoint(
-            id=entity_id,
+            id=entity_id_to_qdrant_id(entity_id),
             vector=[0.1] * 1024,  # Mock vector
             payload={
                 'file_path': file_path,
@@ -310,9 +311,17 @@ class TestCollectionConsistencyValidator:
         with patch('core.sync.validator.ParserRegistry') as mock_parser_registry:
             mock_registry = Mock()
             mock_parser = Mock()
-            mock_parser.parse_file = AsyncMock(return_value=[
-                self.create_test_entity("parsed_function", temp_project_dir / "test.py")
-            ])
+            
+            def mock_parse_side_effect(file_path):
+                # Return appropriate entity based on file path
+                if "missing1.py" in str(file_path):
+                    return [self.create_test_entity("function_in_missing1_py", file_path)]
+                elif "missing2.py" in str(file_path):
+                    return [self.create_test_entity("function_in_missing2_py", file_path)]
+                else:
+                    return [self.create_test_entity("parsed_function", file_path)]
+            
+            mock_parser.parse_file = AsyncMock(side_effect=mock_parse_side_effect)
             mock_registry.can_parse.return_value = True
             mock_registry.get_parser.return_value = mock_parser
             mock_parser_registry.return_value = mock_registry
@@ -498,9 +507,15 @@ class TestCollectionConsistencyValidator:
         with patch('core.sync.validator.ParserRegistry') as mock_parser_registry:
             mock_registry = Mock()
             mock_parser = Mock()
-            mock_parser.parse_file = AsyncMock(return_value=[
-                self.create_test_entity("unindexed_function", temp_project_dir / "unindexed.py")
-            ])
+            
+            def mock_parse_side_effect(file_path):
+                # Return appropriate entity based on file path
+                if "unindexed.py" in str(file_path):
+                    return [self.create_test_entity("unindexed_function", file_path)]
+                else:
+                    return [self.create_test_entity("test_function", file_path)]
+            
+            mock_parser.parse_file = AsyncMock(side_effect=mock_parse_side_effect)
             mock_registry.can_parse.return_value = True
             mock_registry.get_parser.return_value = mock_parser
             mock_parser_registry.return_value = mock_registry
@@ -537,7 +552,7 @@ class TestCollectionConsistencyValidatorEdgeCases:
     ) -> SearchResult:
         """Create a mock SearchResult object for testing."""
         point = QdrantPoint(
-            id=entity_id,
+            id=entity_id_to_qdrant_id(entity_id),
             vector=[0.1] * 1024,  # Mock vector
             payload={
                 'file_path': file_path,
@@ -628,7 +643,7 @@ class TestCollectionConsistencyValidatorEdgeCases:
         # Create a malformed SearchResult for robustness testing
         # Use minimal required fields but with empty file_path to test robustness
         invalid_point = QdrantPoint(
-            id='invalid_entity_1',
+            id=entity_id_to_qdrant_id('invalid_entity_1'),
             vector=[0.1] * 1024,
             payload={
                 'entity_id': 'invalid_entity_1',

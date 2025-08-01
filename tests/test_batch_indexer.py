@@ -59,6 +59,10 @@ def mock_client():
     """Create mock HybridQdrantClient"""
     client = Mock(spec=HybridQdrantClient)
     client.embedder = None
+    
+    # Add normalize_point_id method that BatchIndexer now needs
+    from core.storage.utils import entity_id_to_qdrant_id
+    client.normalize_point_id = Mock(side_effect=entity_id_to_qdrant_id)
     return client
 
 

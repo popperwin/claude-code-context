@@ -107,7 +107,7 @@ class QdrantPoint(BaseModel):
     model_config = ConfigDict(frozen=True)
     
     # Point identification
-    id: str  # Usually entity ID or content hash
+    id: int  # Normalized point ID (use HybridQdrantClient.normalize_point_id() to convert entity IDs)
     
     # Vector data
     vector: List[float]
@@ -121,10 +121,10 @@ class QdrantPoint(BaseModel):
     
     @field_validator('id')
     @classmethod
-    def validate_id(cls, v: str) -> str:
-        """Validate point ID is not empty"""
-        if not v.strip():
-            raise ValueError('Point ID cannot be empty')
+    def validate_id(cls, v: int) -> int:
+        """Validate point ID is valid integer"""
+        if v < 0:
+            raise ValueError('Point ID must be non-negative integer')
         return v
     
     @field_validator('vector')

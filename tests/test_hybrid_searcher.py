@@ -11,6 +11,7 @@ from typing import List
 
 from core.search import HybridSearcher, SearchConfig, SearchMode
 from core.storage.client import HybridQdrantClient
+from core.storage.utils import entity_id_to_qdrant_id
 from core.models.storage import SearchResult, QdrantPoint
 
 
@@ -24,11 +25,10 @@ def mock_client():
 @pytest.fixture
 def sample_search_results():
     """Create sample search results for testing"""
-    import uuid
     return [
         SearchResult(
             point=QdrantPoint(
-                id=str(uuid.uuid4()),  # Use UUID for valid Qdrant point ID
+                id=entity_id_to_qdrant_id("test.py::test_function"),  # Use centralized conversion
                 vector=[0.1] * 1024,
                 payload={
                     "entity_id": "test.py::test_function",
@@ -48,7 +48,7 @@ def sample_search_results():
         ),
         SearchResult(
             point=QdrantPoint(
-                id=str(uuid.uuid4()),  # Use UUID for valid Qdrant point ID
+                id=entity_id_to_qdrant_id("helper.js::helper_method"),  # Use centralized conversion
                 vector=[0.1] * 1024,
                 payload={
                     "entity_id": "helper.js::helper_method",
@@ -68,7 +68,7 @@ def sample_search_results():
         ),
         SearchResult(
             point=QdrantPoint(
-                id=str(uuid.uuid4()),  # Use UUID for valid Qdrant point ID
+                id=entity_id_to_qdrant_id("setup.py::setup_test"),  # Use centralized conversion
                 vector=[0.1] * 1024,
                 payload={
                     "entity_id": "setup.py::setup_test",

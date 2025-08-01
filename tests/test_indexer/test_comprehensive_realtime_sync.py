@@ -582,13 +582,8 @@ MOVE_CONSTANT = "moved constant"
             assert await self.wait_for_entity_not_exists(integrator, "function_to_move", str(source_file)), \
                 "Entity should be removed from source location"
             
-            # For move operations, we may need to manually trigger the creation at target
-            # This is because move detection can be tricky across directories
-            await self.wait_for_sync_delay(2.0)  # Give time for deletion to process
-            
-            # Manually create at target location since cross-directory moves may not be detected as atomic
-            create_result = await integrator.bulk_entity_create([target_file])
-            assert create_result.success, "Create at target should succeed"
+            # Wait for real-time sync to process the move (DELETE + CREATE automatically)
+            await self.wait_for_sync_delay(3.0)  # Give time for both deletion and creation to process
             
             # Verify entities exist at target location
             target_results = await self.search_for_entity(integrator, "function_to_move", str(target_file))

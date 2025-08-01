@@ -14,6 +14,7 @@ from qdrant_client.http.exceptions import ResponseHandlingException
 
 from core.storage.client import HybridQdrantClient, SearchMode
 from core.storage.schemas import CollectionConfig, CollectionType, DistanceMetric
+from core.storage.utils import entity_id_to_qdrant_id
 from core.models.storage import QdrantPoint, SearchResult, StorageResult
 from core.embeddings.base import BaseEmbedder
 
@@ -69,10 +70,9 @@ def collection_config():
 @pytest.fixture
 def sample_points():
     """Create sample QdrantPoints for testing"""
-    import uuid
     return [
         QdrantPoint(
-            id=str(uuid.uuid4()),  # Use UUID for valid Qdrant point ID
+            id=entity_id_to_qdrant_id("test.py::test_function"),  # Use centralized conversion
             vector=[0.1] * 1024,
             payload={
                 "entity_id": "test.py::test_function",
@@ -83,7 +83,7 @@ def sample_points():
             }
         ),
         QdrantPoint(
-            id=str(uuid.uuid4()),  # Use UUID for valid Qdrant point ID
+            id=entity_id_to_qdrant_id("test.py::TestClass"),  # Use centralized conversion
             vector=[0.2] * 1024,
             payload={
                 "entity_id": "test.py::TestClass",
@@ -281,9 +281,9 @@ class TestHybridQdrantClient:
         """Test payload-only search"""
         client = HybridQdrantClient()
         
-        # Mock scroll results
+        # Mock scroll results with realistic integer IDs (what Qdrant actually returns)
         mock_point1 = Mock()
-        mock_point1.id = "point1"
+        mock_point1.id = entity_id_to_qdrant_id("test.py::test_function")
         mock_point1.payload = {
             "entity_id": "test.py::test_function",  # Required field
             "entity_name": "test_function",
@@ -294,7 +294,7 @@ class TestHybridQdrantClient:
         }
         
         mock_point2 = Mock()
-        mock_point2.id = "point2"
+        mock_point2.id = entity_id_to_qdrant_id("test.py::helper_function")
         mock_point2.payload = {
             "entity_id": "test.py::helper_function",  # Required field
             "entity_name": "helper_function",
@@ -325,9 +325,9 @@ class TestHybridQdrantClient:
         """Test semantic search"""
         client = HybridQdrantClient(embedder=mock_embedder)
         
-        # Mock search results
+        # Mock search results with realistic integer IDs (what Qdrant actually returns)
         mock_scored_point1 = Mock()
-        mock_scored_point1.id = "point1"
+        mock_scored_point1.id = entity_id_to_qdrant_id("test.py::similar_function")
         mock_scored_point1.score = 0.9
         mock_scored_point1.payload = {
             "entity_id": "test.py::similar_function",
@@ -337,7 +337,7 @@ class TestHybridQdrantClient:
         }
         
         mock_scored_point2 = Mock()
-        mock_scored_point2.id = "point2"
+        mock_scored_point2.id = entity_id_to_qdrant_id("test.py::another_function")
         mock_scored_point2.score = 0.7
         mock_scored_point2.payload = {
             "entity_id": "test.py::another_function",
@@ -424,11 +424,10 @@ class TestHybridQdrantClient:
     @pytest.mark.asyncio 
     async def test_search_hybrid_mocked(self, mock_embedder):
         """Test hybrid search logic with mocked components (for unit testing combine logic)"""
-        import uuid
         client = HybridQdrantClient(embedder=mock_embedder)
         
-        # Use consistent UUID for both results to test combination logic
-        test_point_id = str(uuid.uuid4())
+        # Use consistent point ID for both results to test combination logic
+        test_point_id = entity_id_to_qdrant_id("test.py::test")
         
         # Mock both search types to test _combine_search_results logic
         payload_results = [

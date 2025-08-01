@@ -17,6 +17,7 @@ from tqdm.asyncio import tqdm
 
 from .client import HybridQdrantClient
 from .schemas import CollectionType, CollectionConfig
+from .utils import entity_id_to_qdrant_id
 from ..models.entities import Entity
 from ..models.storage import QdrantPoint, StorageResult
 from ..embeddings.base import BaseEmbedder
@@ -136,12 +137,6 @@ class BatchIndexer:
         
         logger.info(f"Initialized BatchIndexer with batch_size={batch_size}")
     
-    def _string_to_int_id(self, string_id: str) -> int:
-        """Convert string ID to integer ID for Qdrant compatibility"""
-        # Use SHA256 hash and take first 8 bytes as unsigned integer
-        hash_digest = hashlib.sha256(string_id.encode('utf-8')).digest()
-        # Convert first 8 bytes to unsigned 64-bit integer
-        return int.from_bytes(hash_digest[:8], byteorder='big', signed=False)
     
     def add_progress_callback(
         self,
@@ -422,10 +417,11 @@ class BatchIndexer:
                     payload["entity_id"] = entity.id
                     
                     # Convert string ID to integer for Qdrant compatibility
-                    qdrant_id = self._string_to_int_id(entity.id)
+                    # Use centralized normalization function for consistency
+                    qdrant_id = entity_id_to_qdrant_id(entity.id)
                     
                     point = QdrantPoint(
-                        id=str(qdrant_id),  # QdrantPoint expects string, but it will be converted to int
+                        id=qdrant_id,  # QdrantPoint now expects integer directly
                         vector=embedding,
                         payload=payload
                     )

@@ -19,6 +19,7 @@ from collections import defaultdict
 from enum import Enum
 
 from ..storage.client import HybridQdrantClient, StorageResult
+from ..storage.utils import entity_id_to_qdrant_id
 from ..parser.registry import ParserRegistry
 from .deterministic import DeterministicEntityId
 from .lifecycle import EntityLifecycleManager
@@ -407,7 +408,7 @@ class CollectionConsistencyValidator:
                                     points = []
                                     for entity in entities:
                                         point = QdrantPoint(
-                                            id=entity.id,
+                                            id=entity_id_to_qdrant_id(entity.id),
                                             vector=[0.0] * 1024,
                                             payload=entity.to_qdrant_payload()
                                         )

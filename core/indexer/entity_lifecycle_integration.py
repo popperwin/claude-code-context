@@ -467,15 +467,12 @@ class EntityLifecycleIntegrator:
                     file_paths=[file_path],
                     collection_name=self.collection_name,
                     project_path=self.project_path,
-                    scan_mode="full_scan",
+                    scan_mode="parse_only",  # Use parse_only to get entities without storing them
                     batch_size=self.batch_size
                 )
                 
                 scan_result = await self.entity_scanner.scan_files(scan_request)
-                new_entities = []
-                
-                # Extract entities from scan results (assuming they were processed)
-                # Note: In production, we might need to extract from parse results directly
+                new_entities = scan_result.entities or []
                 
             # Perform atomic replacement
             replacement_result = await self.lifecycle_manager.atomic_entity_replacement(

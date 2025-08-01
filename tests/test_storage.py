@@ -10,6 +10,7 @@ from core.models.storage import (
     OperationStatus, OperationResult, QdrantPoint, SearchResult,
     StorageResult, CollectionInfo
 )
+from core.storage.utils import entity_id_to_qdrant_id
 
 
 class TestOperationResult:
@@ -95,12 +96,12 @@ class TestQdrantPoint:
         }
         
         point = QdrantPoint(
-            id="point_1",
+            id=entity_id_to_qdrant_id("test_entity"),
             vector=vector,
             payload=payload
         )
         
-        assert point.id == "point_1"
+        assert point.id == entity_id_to_qdrant_id("test_entity")
         assert len(point.vector) == 1024
         assert point.entity_id == "test_entity"
         assert point.entity_type == "function"
@@ -116,9 +117,9 @@ class TestQdrantPoint:
             "file_path": "test.py"
         }
         
-        with pytest.raises(ValueError, match="Point ID cannot be empty"):
+        with pytest.raises(ValueError, match="Point ID must be non-negative integer"):
             QdrantPoint(
-                id="",
+                id=-1,  # Negative integer should fail
                 vector=vector,
                 payload=payload
             )
@@ -134,7 +135,7 @@ class TestQdrantPoint:
         # Empty vector
         with pytest.raises(ValueError, match="Vector cannot be empty"):
             QdrantPoint(
-                id="point_1",
+                id=entity_id_to_qdrant_id("test_entity"),
                 vector=[],
                 payload=payload
             )
@@ -142,7 +143,7 @@ class TestQdrantPoint:
         # Wrong dimensions
         with pytest.raises(ValueError, match="Vector must have 1024 dimensions"):
             QdrantPoint(
-                id="point_1",
+                id=entity_id_to_qdrant_id("test_entity"),
                 vector=[0.1] * 512,  # Wrong size
                 payload=payload
             )
@@ -161,7 +162,7 @@ class TestQdrantPoint:
         for payload in incomplete_payloads:
             with pytest.raises(ValueError, match="Payload missing required fields"):
                 QdrantPoint(
-                    id="point_1",
+                    id=entity_id_to_qdrant_id("test_entity"),
                     vector=vector,
                     payload=payload
                 )
@@ -176,7 +177,7 @@ class TestQdrantPoint:
         }
         
         point = QdrantPoint(
-            id="point_1",
+            id=entity_id_to_qdrant_id("test_entity"),
             vector=vector,
             payload=payload
         )
@@ -184,7 +185,7 @@ class TestQdrantPoint:
         # Test to_qdrant_format
         qdrant_format = point.to_qdrant_format()
         expected_format = {
-            "id": "point_1",
+            "id": entity_id_to_qdrant_id("test_entity"),
             "vector": vector,
             "payload": payload
         }
@@ -210,7 +211,7 @@ class TestSearchResult:
         }
         
         point = QdrantPoint(
-            id="point_1",
+            id=entity_id_to_qdrant_id("test_entity"),
             vector=vector,
             payload=payload
         )
@@ -243,7 +244,7 @@ class TestSearchResult:
         }
         
         point = QdrantPoint(
-            id="point_1",
+            id=entity_id_to_qdrant_id("test_entity"),
             vector=vector,
             payload=payload
         )
@@ -302,7 +303,7 @@ class TestSearchResult:
         }
         
         point = QdrantPoint(
-            id="point_1",
+            id=entity_id_to_qdrant_id("test_entity"),
             vector=vector,
             payload=payload
         )

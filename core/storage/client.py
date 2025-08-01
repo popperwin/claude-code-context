@@ -6,6 +6,7 @@ collection management, and performance optimization.
 """
 
 import asyncio
+import hashlib
 import logging
 import time
 from typing import List, Dict, Any, Optional, Union, Tuple
@@ -26,6 +27,7 @@ from .schemas import (
     CollectionConfig, CollectionType, CollectionManager, 
     QdrantSchema, DistanceMetric
 )
+from .utils import entity_id_to_qdrant_id
 from ..models.storage import (
     QdrantPoint, SearchResult, StorageResult, OperationStatus
 )
@@ -319,6 +321,21 @@ class HybridQdrantClient:
         }
         return mapping[metric]
     
+    def normalize_point_id(self, entity_id: str) -> int:
+        """
+        Convert entity ID to Qdrant point ID using consistent hashing.
+        
+        This is the public method for callers to convert entity IDs to point IDs
+        before calling upsert_points() or delete_points().
+        
+        Args:
+            entity_id: Entity identifier to convert
+            
+        Returns:
+            Integer point ID for Qdrant storage
+        """
+        return entity_id_to_qdrant_id(entity_id)
+    
     async def upsert_points(
         self,
         collection_name: str,
@@ -349,13 +366,12 @@ class HybridQdrantClient:
             for i in range(0, total_points, batch_size):
                 batch = points[i:i + batch_size]
                 
-                # Convert to Qdrant format
+                # Convert to Qdrant format - clean single-type contract
                 qdrant_points = []
                 for point in batch:
-                    # Convert string ID to integer for Qdrant
-                    qdrant_id = int(point.id) if point.id.lstrip('-').isdigit() else point.id
+                    # QdrantPoint.id is already an integer from caller normalization
                     qdrant_points.append(PointStruct(
-                        id=qdrant_id,
+                        id=point.id,  # Direct use - clean contract
                         vector=point.vector,
                         payload=point.payload
                     ))
@@ -434,7 +450,7 @@ class HybridQdrantClient:
             results = []
             for i, point in enumerate(scroll_result[0]):  # scroll returns (points, next_page_offset)
                 qdrant_point = QdrantPoint(
-                    id=str(point.id),
+                    id=int(point.id),  # Qdrant returns the integer IDs we stored
                     vector=[0.0] * 1024,  # Dummy vector for payload search (validation requirement)
                     payload=point.payload or {}
                 )
@@ -525,7 +541,7 @@ class HybridQdrantClient:
             results = []
             for i, scored_point in enumerate(search_results):
                 qdrant_point = QdrantPoint(
-                    id=str(scored_point.id),
+                    id=int(scored_point.id),  # Qdrant returns the integer IDs we stored
                     vector=[0.0] * 1024,  # Dummy vector for search results (validation requirement)
                     payload=scored_point.payload or {}
                 )
@@ -988,14 +1004,14 @@ class HybridQdrantClient:
     async def delete_points(
         self,
         collection_name: str,
-        point_ids: List[Union[str, int]]
+        point_ids: List[int]
     ) -> StorageResult:
         """
         Delete specific points by their IDs.
         
         Args:
             collection_name: Collection to delete from
-            point_ids: List of point IDs to delete
+            point_ids: List of integer point IDs to delete (use normalize_point_id() to convert entity IDs)
             
         Returns:
             Storage operation result with deletion count
@@ -1008,8 +1024,7 @@ class HybridQdrantClient:
                 return StorageResult.successful_delete(collection_name, 0, processing_time)
             
             
-            # Convert IDs to appropriate format for Qdrant
-            # Keep the original types as Qdrant client handles both strings and ints
+            # Clean single-type contract - only accepts integers
             try:
                 points_selector = PointIdsList(points=point_ids)
                 
