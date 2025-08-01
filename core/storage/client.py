@@ -518,8 +518,8 @@ class HybridQdrantClient:
         start_time = time.time()
         
         try:
-            # Generate query embedding
-            query_embedding = await self.embedder.embed_single(query)
+            # Generate query embedding with s2p_query prompt for asymmetric search
+            query_embedding = await self.embedder.embed_query(query)
             
             # Build additional filters
             search_filter = None

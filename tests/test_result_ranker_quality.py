@@ -25,6 +25,9 @@ from core.parser.parallel_pipeline import ProcessParsingPipeline
 from core.parser.registry import ParserRegistry
 from core.embeddings.stella import StellaEmbedder
 from core.indexer.cache import CacheManager
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class TestResultRankerQuality:
@@ -162,7 +165,7 @@ class TestResultRankerQuality:
         collection_manager = CollectionManager(project_name=base_project_name)
         actual_collection_name = collection_manager.get_collection_name(CollectionType.CODE)
         
-        print(f"Looking for collection: {actual_collection_name}")
+        logger.info(f"Looking for collection: {actual_collection_name}")
         
         # Check if collection already exists with sufficient entities
         try:
@@ -347,7 +350,7 @@ class TestResultRankerQuality:
         assert max_per_file <= 2, f"Found {max_per_file} results from same file, max should be 2"
         
         # Entity names should be sufficiently different
-        entity_names = [r.point.payload["entity_name"] for r in ranked_results]
+        entity_names = set([r.point.payload["entity_name"] for r in ranked_results])
         unique_names = set(entity_names)
         assert len(unique_names) == len(entity_names), "All entity names should be unique after diversity filtering"
         

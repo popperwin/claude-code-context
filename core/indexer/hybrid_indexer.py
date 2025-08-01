@@ -1482,6 +1482,266 @@ class HybridIndexer:
         
         return result
     
+    async def _chunked_entity_upsert(
+        self,
+        collection_name: str,
+        entities: List[Entity],
+        chunk_size: int = 1000,
+        progress_callback: Optional[Callable[[int, int, Dict[str, Any]], None]] = None
+    ) -> Dict[str, Any]:
+        """
+        Upsert entities in chunks with progress tracking and comprehensive metrics.
+        
+        This method implements chunked upsert operations with batch processing for
+        optimal performance, real-time progress tracking, and comprehensive error handling.
+        Designed for delta-scan pipeline where large batches of entities need to be
+        efficiently stored with embedding generation.
+        
+        Args:
+            collection_name: Target collection name
+            entities: List of entities to upsert
+            chunk_size: Number of entities per upsert chunk (default 1000)
+            progress_callback: Optional callback for progress tracking
+            
+        Returns:
+            Dictionary with upsert results and comprehensive metrics
+        """
+        if not entities:
+            return {
+                "success": True,
+                "total_entities": 0,
+                "upserted_entities": 0,
+                "processed_chunks": 0,
+                "failed_entities": 0,
+                "processing_time_ms": 0.0,
+                "embedding_time_ms": 0.0,
+                "storage_time_ms": 0.0,
+                "average_time_per_entity_ms": 0.0,
+                "entities_per_second": 0.0,
+                "errors": []
+            }
+        
+        start_time = time.perf_counter()
+        total_upserted = 0
+        processed_chunks = 0
+        failed_entities = 0
+        total_embedding_time = 0.0
+        total_storage_time = 0.0
+        errors = []
+        
+        logger.info(
+            f"Starting chunked upsert of {len(entities)} entities "
+            f"in {collection_name} (chunk_size={chunk_size})"
+        )
+        
+        try:
+            # Process entities in chunks for optimal batch performance
+            chunks = self._chunk_list(entities, chunk_size)
+            
+            for chunk_idx, chunk in enumerate(chunks):
+                try:
+                    chunk_start_time = time.perf_counter()
+                    
+                    # Generate embeddings for chunk
+                    embedding_start_time = time.perf_counter()
+                    
+                    # Convert entities to searchable text
+                    texts = [self._entity_to_searchable_text(entity) for entity in chunk]
+                    
+                    # Generate embeddings using the embedder
+                    if self.embedder:
+                        embedding_response = await self.embedder.embed_texts(texts)
+                        embeddings = embedding_response.embeddings
+                        
+                        if len(embeddings) != len(chunk):
+                            error_msg = (
+                                f"Chunk {chunk_idx + 1}: Embedding count mismatch: "
+                                f"{len(embeddings)} != {len(chunk)}"
+                            )
+                            errors.append(error_msg)
+                            logger.error(error_msg)
+                            failed_entities += len(chunk)
+                            continue
+                    else:
+                        # Use zero embeddings if no embedder available
+                        embeddings = [[0.0] * 1024 for _ in chunk]
+                        logger.warning(f"Chunk {chunk_idx + 1}: No embedder available, using zero embeddings")
+                    
+                    embedding_time = time.perf_counter() - embedding_start_time
+                    total_embedding_time += embedding_time
+                    
+                    # Create Qdrant points
+                    storage_start_time = time.perf_counter()
+                    points = []
+                    
+                    for entity, embedding in zip(chunk, embeddings):
+                        try:
+                            payload = entity.to_qdrant_payload()
+                            # Store original entity ID for retrieval consistency
+                            payload["entity_id"] = entity.id
+                            
+                            # Convert to Qdrant-compatible ID
+                            qdrant_id = entity_id_to_qdrant_id(entity.id)
+                            
+                            from ..models.storage import QdrantPoint
+                            point = QdrantPoint(
+                                id=qdrant_id,
+                                vector=embedding,
+                                payload=payload
+                            )
+                            points.append(point)
+                            
+                        except Exception as e:
+                            logger.warning(f"Failed to create point for entity {entity.id}: {e}")
+                    
+                    if not points:
+                        error_msg = f"Chunk {chunk_idx + 1}: No valid points created"
+                        errors.append(error_msg)
+                        failed_entities += len(chunk)
+                        continue
+                    
+                    # Upsert points to Qdrant
+                    upsert_result = await self.storage_client.upsert_points(collection_name, points)
+                    
+                    storage_time = time.perf_counter() - storage_start_time
+                    total_storage_time += storage_time
+                    
+                    if upsert_result.success:
+                        chunk_upserted = len(points)
+                        total_upserted += chunk_upserted
+                        failed_entities += len(chunk) - len(points)
+                        processed_chunks += 1
+                        
+                        chunk_time = time.perf_counter() - chunk_start_time
+                        
+                        logger.debug(
+                            f"Chunk {chunk_idx + 1}/{len(chunks)}: "
+                            f"Upserted {chunk_upserted} entities "
+                            f"(emb: {embedding_time:.3f}s, storage: {storage_time:.3f}s, "
+                            f"total: {chunk_time:.3f}s)"
+                        )
+                        
+                        # Progress callback with comprehensive metrics
+                        if progress_callback:
+                            progress_data = {
+                                "phase": "chunked_upsert",
+                                "current_chunk": chunk_idx + 1,
+                                "total_chunks": len(chunks),
+                                "chunk_entities": len(chunk),
+                                "chunk_upserted": chunk_upserted,
+                                "total_upserted": total_upserted,
+                                "chunk_time_ms": chunk_time * 1000,
+                                "embedding_time_ms": embedding_time * 1000,
+                                "storage_time_ms": storage_time * 1000,
+                                "entities_per_second": chunk_upserted / chunk_time if chunk_time > 0 else 0
+                            }
+                            progress_callback(
+                                chunk_idx + 1,
+                                len(chunks),
+                                progress_data
+                            )
+                    else:
+                        error_msg = f"Chunk {chunk_idx + 1} upsert failed: {upsert_result.error}"
+                        errors.append(error_msg)
+                        logger.error(error_msg)
+                        failed_entities += len(chunk)
+                
+                except Exception as e:
+                    error_msg = f"Error processing chunk {chunk_idx + 1}: {e}"
+                    errors.append(error_msg)
+                    logger.error(error_msg)
+                    failed_entities += len(chunk)
+                    continue
+        
+        except Exception as e:
+            error_msg = f"Fatal error in chunked upsert: {e}"
+            errors.append(error_msg)
+            logger.error(error_msg)
+        
+        processing_time = time.perf_counter() - start_time
+        
+        # Calculate comprehensive metrics
+        avg_time_per_entity = processing_time / len(entities) if entities else 0
+        entities_per_second = total_upserted / processing_time if processing_time > 0 else 0
+        
+        result = {
+            "success": len(errors) == 0,
+            "total_entities": len(entities),
+            "upserted_entities": total_upserted,
+            "processed_chunks": processed_chunks,
+            "failed_entities": failed_entities,
+            "processing_time_ms": processing_time * 1000,
+            "embedding_time_ms": total_embedding_time * 1000,
+            "storage_time_ms": total_storage_time * 1000,
+            "average_time_per_entity_ms": avg_time_per_entity * 1000,
+            "entities_per_second": entities_per_second,
+            "errors": errors
+        }
+        
+        logger.info(
+            f"Chunked upsert complete: {total_upserted}/{len(entities)} entities "
+            f"upserted in {processing_time:.3f}s "
+            f"({entities_per_second:.1f} entities/sec, {processed_chunks} chunks processed)"
+        )
+        
+        return result
+    
+    def _entity_to_searchable_text(self, entity: Entity) -> str:
+        """
+        Convert entity to searchable text for embedding generation.
+        
+        This method creates a comprehensive text representation of the entity
+        that captures its semantic meaning for embedding-based search.
+        
+        Args:
+            entity: Entity to convert
+            
+        Returns:
+            Searchable text representation optimized for embeddings
+        """
+        parts = []
+        
+        # Add entity type and name for primary identification
+        if entity.entity_type:
+            parts.append(f"Type: {entity.entity_type.value}")
+        
+        if entity.name:
+            parts.append(f"Name: {entity.name}")
+        
+        if entity.qualified_name and entity.qualified_name != entity.name:
+            parts.append(f"Qualified: {entity.qualified_name}")
+        
+        # Add signature for functional context
+        if entity.signature:
+            parts.append(f"Signature: {entity.signature}")
+        
+        # Add docstring for semantic understanding (truncated for performance)
+        if entity.docstring:
+            docstring = entity.docstring[:400]  # Increased limit for better context
+            if len(entity.docstring) > 400:
+                docstring += "..."
+            parts.append(f"Description: {docstring}")
+        
+        # Add source code context (first few lines for implementation patterns)
+        if entity.source_code:
+            lines = entity.source_code.split('\n')[:6]  # Slightly more lines for context
+            code_snippet = '\n'.join(lines)
+            if len(lines) >= 6:
+                code_snippet += "\n..."
+            parts.append(f"Code: {code_snippet}")
+        
+        # Add file context for location-based search
+        if entity.location and entity.location.file_path:
+            file_name = Path(entity.location.file_path).name
+            parts.append(f"File: {file_name}")
+        
+        # Add visibility information
+        if entity.visibility:
+            parts.append(f"Visibility: {entity.visibility.value}")
+        
+        # Join with separators optimized for embedding models
+        return " | ".join(parts)
+    
     def _chunk_list(self, items: List[Any], chunk_size: int) -> List[List[Any]]:
         """
         Split a list into chunks of specified size.

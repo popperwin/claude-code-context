@@ -267,8 +267,8 @@ class StellaEmbedder(BaseEmbedder):
             miss_texts = [valid_texts[i] for i in cache_miss_indices]
             
             try:
-                # Generate embeddings with Stella
-                new_embeddings = await self._generate_stella_embeddings(miss_texts)
+                # Generate embeddings with Stella (no prompt for documents - keep existing behavior)
+                new_embeddings = await self._generate_stella_embeddings(miss_texts, prompt_name=None)
                 
                 # Store in cache
                 self._cache.put_batch(miss_texts, new_embeddings, self.model_name)
@@ -287,8 +287,50 @@ class StellaEmbedder(BaseEmbedder):
         # Filter out None values and return
         return [emb for emb in embeddings if emb is not None]
     
-    async def _generate_stella_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings directly with Stella model"""
+    async def embed_query(self, text: str, prompt: Optional[str] = "s2p_query") -> List[float]:
+        """
+        Generate embedding for a search query with s2p_query prompt for asymmetric search.
+        
+        This implementation uses Stella's s2p_query prompt specifically designed for
+        sentence-to-passage retrieval, where queries and documents need different encoding.
+        
+        Args:
+            text: Query text to embed
+            prompt: Prompt name for the model (default: "s2p_query" for Stella)
+            
+        Returns:
+            Query embedding vector with s2p_query prompt applied
+        """
+        if not self.is_loaded:
+            raise RuntimeError("Model not loaded")
+        
+        if not text.strip():
+            # Return zero vector for empty text
+            return [0.0] * self.dimensions
+        
+        # Validate and preprocess text
+        valid_texts = self._validate_texts([text])
+        if not valid_texts:
+            return [0.0] * self.dimensions
+        
+        # Generate query embedding with prompt (bypass cache for queries since they're typically unique)
+        try:
+            query_embeddings = await self._generate_stella_embeddings(valid_texts, prompt_name=prompt)
+            
+            # Update statistics
+            self._total_embeddings += 1
+            
+            if query_embeddings:
+                return query_embeddings[0]
+            else:
+                raise RuntimeError("Failed to generate query embedding")
+                
+        except Exception as e:
+            logger.error(f"Query embedding generation failed: {e}")
+            raise RuntimeError(f"Query embedding generation failed: {e}") from e
+    
+    async def _generate_stella_embeddings(self, texts: List[str], prompt_name: Optional[str] = None) -> List[List[float]]:
+        """Generate embeddings directly with Stella model with optional prompt support"""
         if not texts:
             return []
         
@@ -302,6 +344,10 @@ class StellaEmbedder(BaseEmbedder):
                 'convert_to_numpy': True,
                 'normalize_embeddings': self.stella_config.normalize_embeddings
             }
+            
+            # Add prompt name for asymmetric search (queries use s2p_query, documents use no prompt)
+            if prompt_name:
+                encode_kwargs['prompt_name'] = prompt_name
             
             # Add device-specific optimizations
             if self._device == 'cuda' and hasattr(self.stella_config, 'use_fp16'):

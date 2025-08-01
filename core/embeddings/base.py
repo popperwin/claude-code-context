@@ -175,6 +175,29 @@ class BaseEmbedder(ABC):
         else:
             raise RuntimeError("Failed to generate embedding for single text")
     
+    async def embed_query(self, text: str, prompt: Optional[str] = "s2p_query") -> List[float]:
+        """
+        Generate embedding for a search query with optional prompt.
+        
+        This method is specifically designed for asymmetric search where queries
+        need different encoding than documents. For Stella models, queries should
+        use the "s2p_query" prompt while documents use no prompt.
+        
+        Args:
+            text: Query text to embed
+            prompt: Prompt name for the model (default: "s2p_query" for Stella)
+            
+        Returns:
+            Query embedding vector
+        """
+        if not text.strip():
+            # Return zero vector for empty text
+            return [0.0] * self.dimensions
+        
+        # Default implementation falls back to embed_single for compatibility
+        # Subclasses should override to implement prompt support
+        return await self.embed_single(text)
+    
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the model"""
         return {
