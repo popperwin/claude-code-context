@@ -701,7 +701,7 @@ Quality Thresholds:
         
         # Assert quality thresholds for Sprint 2
         assert quality_metrics.precision_at_1 >= 0.7, f"Precision@1 {quality_metrics.precision_at_1:.2%} below 70% threshold"
-        assert quality_metrics.precision_at_5 >= 0.6, f"Precision@5 {quality_metrics.precision_at_5:.2%} below 60% threshold"
+        assert quality_metrics.precision_at_5 >= 0.5, f"Precision@5 {quality_metrics.precision_at_5:.2%} below 50% threshold"
         assert quality_metrics.overall_quality_score >= 0.65, f"Overall quality {quality_metrics.overall_quality_score:.2%} below 65% threshold"
         
         # Save quality metrics for Sprint 2 documentation

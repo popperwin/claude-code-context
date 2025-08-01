@@ -3,8 +3,13 @@ Tests for CollectionConsistencyValidator validation and repair mechanism testing
 
 Validates consistency checking, orphaned entity detection, missing entity identification,
 automatic reconciliation, and auto-repair mechanisms for collection integrity.
-"""
 
+NOTE: CollectionConsistencyValidator is NOT currently used by any production code.
+Only these test files create instances of it. The validator was implemented as
+infrastructure but never integrated into the main application workflows.
+This entire test file and the validator module may be deleted in the future
+if the functionality remains unused.
+"""
 import pytest
 import asyncio
 import tempfile
@@ -16,7 +21,7 @@ from typing import List, Dict, Set
 from core.models.entities import Entity, EntityType, SourceLocation
 from core.sync.validator import CollectionConsistencyValidator, ValidationResult, ConsistencyIssue, ValidationStatus
 from core.storage.client import HybridQdrantClient
-from core.models.storage import QdrantPoint
+from core.models.storage import QdrantPoint, SearchResult
 
 
 class TestCollectionConsistencyValidator:
@@ -34,7 +39,7 @@ class TestCollectionConsistencyValidator:
         """Create mock Qdrant client."""
         from core.models.storage import StorageResult
         client = Mock(spec=HybridQdrantClient)
-        # Return empty list directly instead of SearchResult object
+        # Return empty list of SearchResult objects (proper API contract)
         client.search_hybrid = AsyncMock(return_value=[])
         client.get_collection_info = AsyncMock(return_value={"points_count": 0})
         client.delete_points_by_filter = AsyncMock(return_value=StorageResult.successful_delete("test", 0, 10.0))
@@ -82,6 +87,35 @@ class TestCollectionConsistencyValidator:
             docstring=f"Test {name} function",
             signature=f"{name}()" if entity_type == EntityType.FUNCTION else None
         )
+    
+    def create_mock_search_result(
+        self,
+        entity_id: str,
+        file_path: str,
+        entity_name: str,
+        entity_type: str = "function",
+        score: float = 0.8
+    ) -> SearchResult:
+        """Create a mock SearchResult object for testing."""
+        point = QdrantPoint(
+            id=entity_id,
+            vector=[0.1] * 1024,  # Mock vector
+            payload={
+                'file_path': file_path,
+                'entity_name': entity_name,
+                'entity_type': entity_type,
+                'entity_id': entity_id
+            }
+        )
+        
+        return SearchResult(
+            point=point,
+            score=score,
+            query="*",
+            search_type="hybrid",
+            rank=1,
+            total_results=1
+        )
 
     @pytest.mark.asyncio
     async def test_validate_consistency_no_issues(self, consistency_validator, mock_qdrant_client, temp_project_dir):
@@ -92,20 +126,18 @@ class TestCollectionConsistencyValidator:
             (temp_project_dir / filename).write_text(f"def function_in_{filename.replace('.', '_')}(): pass")
         
         # Mock collection entities that have corresponding files
-        mock_entities = []
+        mock_search_results = []
         for i, filename in enumerate(test_files):
             file_path = temp_project_dir / filename
-            entity_data = {
-                'id': f"entity_{i}",
-                'payload': {
-                    'file_path': str(file_path),
-                    'entity_name': f"function_in_{filename.replace('.', '_')}",
-                    'entity_type': 'function'
-                }
-            }
-            mock_entities.append(entity_data)
+            search_result = self.create_mock_search_result(
+                entity_id=f"entity_{i}",
+                file_path=str(file_path),
+                entity_name=f"function_in_{filename.replace('.', '_')}",
+                entity_type="function"
+            )
+            mock_search_results.append(search_result)
         
-        mock_qdrant_client.search_hybrid.return_value = mock_entities
+        mock_qdrant_client.search_hybrid.return_value = mock_search_results
         
         # Validate consistency
         result = await consistency_validator.validate_consistency()
@@ -126,34 +158,28 @@ class TestCollectionConsistencyValidator:
             (temp_project_dir / filename).write_text(f"def function(): pass")
         
         # Mock collection entities - some have missing files
-        mock_entities = [
-            {
-                'id': 'entity_1',
-                'payload': {
-                    'file_path': str(temp_project_dir / "existing1.py"),
-                    'entity_name': 'existing_function',
-                    'entity_type': 'function'
-                }
-            },
-            {
-                'id': 'entity_2', 
-                'payload': {
-                    'file_path': str(temp_project_dir / "missing1.py"),  # File doesn't exist
-                    'entity_name': 'orphaned_function',
-                    'entity_type': 'function'
-                }
-            },
-            {
-                'id': 'entity_3',
-                'payload': {
-                    'file_path': str(temp_project_dir / "missing2.py"),  # File doesn't exist
-                    'entity_name': 'another_orphaned',
-                    'entity_type': 'class'
-                }
-            }
+        mock_search_results = [
+            self.create_mock_search_result(
+                entity_id='entity_1',
+                file_path=str(temp_project_dir / "existing1.py"),
+                entity_name='existing_function',
+                entity_type='function'
+            ),
+            self.create_mock_search_result(
+                entity_id='entity_2',
+                file_path=str(temp_project_dir / "missing1.py"),  # File doesn't exist
+                entity_name='orphaned_function',
+                entity_type='function'
+            ),
+            self.create_mock_search_result(
+                entity_id='entity_3',
+                file_path=str(temp_project_dir / "missing2.py"),  # File doesn't exist
+                entity_name='another_orphaned',
+                entity_type='class'
+            )
         ]
         
-        mock_qdrant_client.search_hybrid.return_value = mock_entities
+        mock_qdrant_client.search_hybrid.return_value = mock_search_results
         
         # Validate consistency
         result = await consistency_validator.validate_consistency()
@@ -182,27 +208,23 @@ class TestCollectionConsistencyValidator:
             (temp_project_dir / filename).write_text(f"def function_in_{filename.replace('.', '_')}(): pass")
         
         # Mock collection entities - missing some files
-        mock_entities = [
-            {
-                'id': 'entity_1',
-                'payload': {
-                    'file_path': str(temp_project_dir / "file1.py"),
-                    'entity_name': 'function_in_file1_py',
-                    'entity_type': 'function'
-                }
-            },
-            {
-                'id': 'entity_2',
-                'payload': {
-                    'file_path': str(temp_project_dir / "file2.py"),
-                    'entity_name': 'function_in_file2_py', 
-                    'entity_type': 'function'
-                }
-            }
+        mock_search_results = [
+            self.create_mock_search_result(
+                entity_id='entity_1',
+                file_path=str(temp_project_dir / "file1.py"),
+                entity_name='function_in_file1_py',
+                entity_type='function'
+            ),
+            self.create_mock_search_result(
+                entity_id='entity_2',
+                file_path=str(temp_project_dir / "file2.py"),
+                entity_name='function_in_file2_py',
+                entity_type='function'
+            )
             # file3.py and file4.py are missing from collection
         ]
         
-        mock_qdrant_client.search_hybrid.return_value = mock_entities
+        mock_qdrant_client.search_hybrid.return_value = mock_search_results
         
         # Validate consistency
         result = await consistency_validator.validate_consistency()
@@ -229,34 +251,28 @@ class TestCollectionConsistencyValidator:
         (temp_project_dir / "existing.py").write_text("def function(): pass")
         
         # Mock collection with orphaned entities
-        mock_entities = [
-            {
-                'id': 'good_entity',
-                'payload': {
-                    'file_path': str(temp_project_dir / "existing.py"),
-                    'entity_name': 'good_function',
-                    'entity_type': 'function'
-                }
-            },
-            {
-                'id': 'orphaned_1',
-                'payload': {
-                    'file_path': str(temp_project_dir / "deleted.py"),
-                    'entity_name': 'orphaned_function',
-                    'entity_type': 'function'
-                }
-            },
-            {
-                'id': 'orphaned_2',
-                'payload': {
-                    'file_path': str(temp_project_dir / "removed.py"),
-                    'entity_name': 'another_orphaned',
-                    'entity_type': 'class'
-                }
-            }
+        mock_search_results = [
+            self.create_mock_search_result(
+                entity_id='good_entity',
+                file_path=str(temp_project_dir / "existing.py"),
+                entity_name='good_function',
+                entity_type='function'
+            ),
+            self.create_mock_search_result(
+                entity_id='orphaned_1',
+                file_path=str(temp_project_dir / "deleted.py"),
+                entity_name='orphaned_function',
+                entity_type='function'
+            ),
+            self.create_mock_search_result(
+                entity_id='orphaned_2',
+                file_path=str(temp_project_dir / "removed.py"),
+                entity_name='another_orphaned',
+                entity_type='class'
+            )
         ]
         
-        mock_qdrant_client.search_hybrid.return_value = mock_entities
+        mock_qdrant_client.search_hybrid.return_value = mock_search_results
         
         # Validate with auto-repair enabled
         result = await consistency_validator.validate_consistency(auto_repair=True)
@@ -279,18 +295,16 @@ class TestCollectionConsistencyValidator:
             (temp_project_dir / filename).write_text(f"def function_in_{filename.replace('.', '_')}(): pass")
         
         # Mock collection with only one entity
-        mock_entities = [
-            {
-                'id': 'existing_entity',
-                'payload': {
-                    'file_path': str(temp_project_dir / "indexed.py"),
-                    'entity_name': 'function_in_indexed_py', 
-                    'entity_type': 'function'
-                }
-            }
+        mock_search_results = [
+            self.create_mock_search_result(
+                entity_id='existing_entity',
+                file_path=str(temp_project_dir / "indexed.py"),
+                entity_name='function_in_indexed_py',
+                entity_type='function'
+            )
         ]
         
-        mock_qdrant_client.search_hybrid.return_value = mock_entities
+        mock_qdrant_client.search_hybrid.return_value = mock_search_results
         
         # Mock the parser to return entities for missing files
         with patch('core.sync.validator.ParserRegistry') as mock_parser_registry:
@@ -322,26 +336,22 @@ class TestCollectionConsistencyValidator:
         (temp_project_dir / "missing_from_collection.py").write_text("def missing_function(): pass")
         
         # Mock collection with mixed entities
-        mock_entities = [
-            {
-                'id': 'good_entity',
-                'payload': {
-                    'file_path': str(temp_project_dir / "good_file.py"),
-                    'entity_name': 'good_function',
-                    'entity_type': 'function'
-                }
-            },
-            {
-                'id': 'orphaned_entity',
-                'payload': {
-                    'file_path': str(temp_project_dir / "deleted_file.py"),  # Doesn't exist
-                    'entity_name': 'orphaned_function',
-                    'entity_type': 'function'
-                }
-            }
+        mock_search_results = [
+            self.create_mock_search_result(
+                entity_id='good_entity',
+                file_path=str(temp_project_dir / "good_file.py"),
+                entity_name='good_function',
+                entity_type='function'
+            ),
+            self.create_mock_search_result(
+                entity_id='orphaned_entity',
+                file_path=str(temp_project_dir / "deleted_file.py"),  # Doesn't exist
+                entity_name='orphaned_function',
+                entity_type='function'
+            )
         ]
         
-        mock_qdrant_client.search_hybrid.return_value = mock_entities
+        mock_qdrant_client.search_hybrid.return_value = mock_search_results
         
         # Validate consistency
         result = await consistency_validator.validate_consistency()
@@ -394,18 +404,16 @@ class TestCollectionConsistencyValidator:
     async def test_repair_failure_handling(self, consistency_validator, mock_qdrant_client, temp_project_dir):
         """Test handling of repair operation failures."""
         # Mock collection with orphaned entity
-        mock_entities = [
-            {
-                'id': 'orphaned',
-                'payload': {
-                    'file_path': str(temp_project_dir / "missing.py"),
-                    'entity_name': 'orphaned_function',
-                    'entity_type': 'function'
-                }
-            }
+        mock_search_results = [
+            self.create_mock_search_result(
+                entity_id='orphaned',
+                file_path=str(temp_project_dir / "missing.py"),
+                entity_name='orphaned_function',
+                entity_type='function'
+            )
         ]
         
-        mock_qdrant_client.search_hybrid.return_value = mock_entities
+        mock_qdrant_client.search_hybrid.return_value = mock_search_results
         
         # Mock delete operation to fail
         from core.models.storage import StorageResult
@@ -430,19 +438,17 @@ class TestCollectionConsistencyValidator:
             (temp_project_dir / f"file{i}.py").write_text(f"def function{i}(): pass")
         
         # Mock collection entities
-        mock_entities = [
-            {
-                'id': f'entity_{i}',
-                'payload': {
-                    'file_path': str(temp_project_dir / f"file{i}.py"),
-                    'entity_name': f'function{i}',
-                    'entity_type': 'function'
-                }
-            }
+        mock_search_results = [
+            self.create_mock_search_result(
+                entity_id=f'entity_{i}',
+                file_path=str(temp_project_dir / f"file{i}.py"),
+                entity_name=f'function{i}',
+                entity_type='function'
+            )
             for i in range(5)
         ]
         
-        mock_qdrant_client.search_hybrid.return_value = mock_entities
+        mock_qdrant_client.search_hybrid.return_value = mock_search_results
         
         # Validate consistency
         result = await consistency_validator.validate_consistency()
@@ -521,6 +527,35 @@ class TestCollectionConsistencyValidatorEdgeCases:
         yield temp_dir
         shutil.rmtree(temp_dir, ignore_errors=True)
     
+    def create_mock_search_result(
+        self,
+        entity_id: str,
+        file_path: str,
+        entity_name: str,
+        entity_type: str = "function",
+        score: float = 0.8
+    ) -> SearchResult:
+        """Create a mock SearchResult object for testing."""
+        point = QdrantPoint(
+            id=entity_id,
+            vector=[0.1] * 1024,  # Mock vector
+            payload={
+                'file_path': file_path,
+                'entity_name': entity_name,
+                'entity_type': entity_type,
+                'entity_id': entity_id
+            }
+        )
+        
+        return SearchResult(
+            point=point,
+            score=score,
+            query="*",
+            search_type="hybrid",
+            rank=1,
+            total_results=1
+        )
+    
     @pytest.fixture
     def consistency_validator(self, temp_project_dir):
         """Create minimal ConsistencyValidator for edge case testing."""
@@ -555,18 +590,16 @@ class TestCollectionConsistencyValidatorEdgeCases:
     async def test_validation_with_empty_project(self, consistency_validator, temp_project_dir):
         """Test validation when project directory is empty."""
         # Mock collection with entities
-        mock_entities = [
-            {
-                'id': 'entity_1',
-                'payload': {
-                    'file_path': str(temp_project_dir / "nonexistent.py"),
-                    'entity_name': 'some_function',
-                    'entity_type': 'function'
-                }
-            }
+        mock_search_results = [
+            self.create_mock_search_result(
+                entity_id='entity_1',
+                file_path=str(temp_project_dir / "nonexistent.py"),
+                entity_name='some_function',
+                entity_type='function'
+            )
         ]
         
-        consistency_validator.storage_client.search_hybrid.return_value = mock_entities
+        consistency_validator.storage_client.search_hybrid.return_value = mock_search_results
         
         # Validate consistency
         result = await consistency_validator.validate_consistency()
@@ -580,38 +613,40 @@ class TestCollectionConsistencyValidatorEdgeCases:
     @pytest.mark.asyncio
     async def test_validation_with_invalid_entity_data(self, consistency_validator, temp_project_dir):
         """Test validation with malformed entity data."""
-        # Mock collection with invalid entity data
-        mock_entities = [
-            {
-                'id': 'valid_entity',
-                'payload': {
-                    'file_path': str(temp_project_dir / "valid.py"),
-                    'entity_name': 'valid_function',
-                    'entity_type': 'function'
-                }
-            },
-            {
-                'id': 'invalid_entity_1',
-                'payload': {
-                    # Missing file_path
-                    'entity_name': 'invalid_function',
-                    'entity_type': 'function'
-                }
-            },
-            {
-                'id': 'invalid_entity_2',
-                'payload': None  # Null payload
-            },
-            {
-                # Missing payload completely
-                'id': 'invalid_entity_3'
-            }
-        ]
-        
         # Create the valid file
         (temp_project_dir / "valid.py").write_text("def valid_function(): pass")
         
-        consistency_validator.storage_client.search_hybrid.return_value = mock_entities
+        # Mock collection with mixed valid and invalid entities 
+        # Note: In practice, SearchResult objects should always be valid, but we test robustness
+        valid_search_result = self.create_mock_search_result(
+            entity_id='valid_entity',
+            file_path=str(temp_project_dir / "valid.py"), 
+            entity_name='valid_function',
+            entity_type='function'
+        )
+        
+        # Create a malformed SearchResult for robustness testing
+        # Use minimal required fields but with empty file_path to test robustness
+        invalid_point = QdrantPoint(
+            id='invalid_entity_1',
+            vector=[0.1] * 1024,
+            payload={
+                'entity_id': 'invalid_entity_1',
+                'entity_type': 'function',
+                'file_path': ''  # Empty file_path to test robustness
+            }
+        )
+        invalid_search_result = SearchResult(
+            point=invalid_point,
+            score=0.5,
+            query="*",
+            search_type="hybrid",
+            rank=1,
+            total_results=1
+        )
+        
+        mock_search_results = [valid_search_result, invalid_search_result]
+        consistency_validator.storage_client.search_hybrid.return_value = mock_search_results
         
         # Validate consistency (should handle invalid data gracefully)
         result = await consistency_validator.validate_consistency()

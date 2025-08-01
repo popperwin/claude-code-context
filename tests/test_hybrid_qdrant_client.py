@@ -362,11 +362,11 @@ class TestHybridQdrantClient:
     
     @pytest.mark.asyncio
     async def test_search_semantic_no_embedder(self):
-        """Test semantic search without embedder"""
+        """Test semantic search without embedder raises ValueError"""
         client = HybridQdrantClient()  # No embedder
         
-        results = await client.search_semantic("test-collection", "test query")
-        assert len(results) == 0
+        with pytest.raises(ValueError, match="No embedder configured for semantic search"):
+            await client.search_semantic("test-collection", "test query")
     
     @pytest.mark.asyncio
     async def test_search_hybrid_integration(self, mock_embedder, collection_config, sample_points):

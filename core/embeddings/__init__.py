@@ -8,8 +8,7 @@ from .base import (
     BaseEmbedder, 
     EmbedderProtocol, 
     EmbeddingRequest, 
-    EmbeddingResponse,
-    EmbeddingManager
+    EmbeddingResponse
 )
 from .stella import StellaEmbedder
 from .cache import EmbeddingCache, get_default_cache, clear_default_cache
@@ -27,7 +26,6 @@ __all__ = [
     "EmbedderProtocol", 
     "EmbeddingRequest",
     "EmbeddingResponse",
-    "EmbeddingManager",
     "StellaEmbedder",
     "EmbeddingCache",
     "get_default_cache",

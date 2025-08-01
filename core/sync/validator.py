@@ -3,8 +3,12 @@ Collection Consistency Validator.
 
 Provides periodic consistency validation, orphaned entity detection,
 automatic reconciliation, and repair mechanisms for collection integrity.
-"""
 
+WARNING: This validator is NOT currently used by any production code.
+Only test files create instances of it. This module was implemented as
+infrastructure but never integrated into the main application workflows.
+This entire module may be deleted in the future if it remains unused.
+"""
 import asyncio
 import logging
 from pathlib import Path
@@ -113,9 +117,9 @@ class ValidationResult:
             "entities_expected": self.entities_expected,
             "entities_in_collection": self.entities_in_collection,
             "total_issues_found": self.total_issues_found,
-            "orphaned_entities": len(self.orphaned_entities),
-            "missing_entities": len(self.missing_entities),
-            "stale_entities": len(self.stale_entities),
+            "orphaned_entities": self.orphaned_entities,
+            "missing_entities": self.missing_entities,
+            "stale_entities": 0,  # Not implemented in basic validate_consistency
             "total_repairs_made": self.total_repairs_made,
             "entities_removed": self.entities_removed,
             "entities_added": self.entities_added,
@@ -234,7 +238,7 @@ class CollectionConsistencyValidator:
                 filters={}
             )
             
-            # search_hybrid returns a list of SearchResult objects directly
+            # search_hybrid returns a list of SearchResult objects or raw dict data
             if not search_result:
                 collection_entities = []
             else:

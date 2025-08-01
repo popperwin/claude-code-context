@@ -325,6 +325,7 @@ class EntityLifecycleManager:
             
             
             results = {
+                "operation": "atomic_replacement",
                 "file_path": file_path,
                 "entities_removed": len(entities_to_remove),
                 "entities_added": len(entities_to_add),
