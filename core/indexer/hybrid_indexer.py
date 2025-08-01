@@ -1392,6 +1392,7 @@ class HybridIndexer:
                 "deleted_entities": 0,
                 "validated_chunks": 0,
                 "skipped_entities": 0,
+                "processing_time_ms": 0.0,
                 "errors": []
             }
         
