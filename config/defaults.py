@@ -59,7 +59,9 @@ DEFAULT_SETTINGS = {
         "enable_watch_mode": False,
         "auto_index_on_change": True,
         "max_concurrent_operations": 4,
-        "cache_embeddings": True
+        "cache_embeddings": True,
+        "enable_delta_scan": False,  # Feature flag for delta-scan mode (Sprint 4.7)
+        "delta_scan_tolerance_seconds": 1.0
     },
     
     # Global directories
@@ -225,7 +227,9 @@ ENV_VAR_MAPPING = {
     'CLAUDE_INDEXER_BATCH_SIZE': 'qdrant.batch_size',
     'CLAUDE_INDEXER_MAX_FILE_SIZE_MB': 'indexing.max_file_size_mb',
     'CLAUDE_INDEXER_LOG_LEVEL': 'logging.level',
-    'CLAUDE_INDEXER_ENABLE_TELEMETRY': 'logging.enable_telemetry'
+    'CLAUDE_INDEXER_ENABLE_TELEMETRY': 'logging.enable_telemetry',
+    'CLAUDE_INDEXER_ENABLE_DELTA_SCAN': 'project.enable_delta_scan',
+    'CLAUDE_INDEXER_DELTA_SCAN_TOLERANCE': 'project.delta_scan_tolerance_seconds'
 }
 
 def get_default_project_config() -> Dict[str, Any]:
@@ -242,7 +246,9 @@ def get_default_project_config() -> Dict[str, Any]:
         'enable_watch_mode': DEFAULT_SETTINGS['project']['enable_watch_mode'],
         'auto_index_on_change': DEFAULT_SETTINGS['project']['auto_index_on_change'],
         'max_concurrent_operations': DEFAULT_SETTINGS['project']['max_concurrent_operations'],
-        'cache_embeddings': DEFAULT_SETTINGS['project']['cache_embeddings']
+        'cache_embeddings': DEFAULT_SETTINGS['project']['cache_embeddings'],
+        'enable_delta_scan': DEFAULT_SETTINGS['project']['enable_delta_scan'],
+        'delta_scan_tolerance_seconds': DEFAULT_SETTINGS['project']['delta_scan_tolerance_seconds']
     }
 
 def get_language_config(file_extension: str) -> Dict[str, Any]:

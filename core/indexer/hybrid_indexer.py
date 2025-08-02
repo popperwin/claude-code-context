@@ -77,6 +77,10 @@ class IndexingJobConfig:
     entity_batch_size: int = 50
     entity_change_detection: bool = True
     entity_content_hashing: bool = True
+    
+    # Delta-scan mode configuration (Sprint 4.7)
+    enable_delta_scan: bool = False  # Feature flag for delta-scan mode
+    delta_scan_tolerance_seconds: float = 1.0  # Tolerance for modified timestamp comparison
 
 
 @dataclass 
@@ -429,19 +433,28 @@ class HybridIndexer:
             for reason in scan_decision.reasoning:
                 logger.debug(f"Scan mode reasoning: {reason}")
             
-            # Phase 2: Execute Entity-Level Operations Based on Scan Mode
-            if scan_decision.selected_mode == EntityScanMode.FULL_RESCAN:
-                await self._perform_full_entity_scan(
+            # Phase 2: Execute Indexing Operations Based on Mode
+            if config.enable_delta_scan:
+                # NEW: Delta-scan mode (Sprint 4.7)
+                logger.info("Using DELTA-SCAN mode (Sprint 4.7 algorithm)")
+                await self._perform_delta_scan_mode(
                     config, collection_name, metrics, show_progress
                 )
-            elif scan_decision.selected_mode == EntityScanMode.ENTITY_SYNC:
-                await self._perform_entity_sync(
-                    config, collection_name, metrics, show_progress
-                )
-            elif scan_decision.selected_mode == EntityScanMode.SYNC_ONLY:
-                await self._enable_entity_sync_only(
-                    config, collection_name, metrics
-                )
+            else:
+                # Legacy: Entity-level scan mode selection  
+                logger.info(f"Using LEGACY entity-scan mode: {scan_decision.selected_mode.value}")
+                if scan_decision.selected_mode == EntityScanMode.FULL_RESCAN:
+                    await self._perform_full_entity_scan(
+                        config, collection_name, metrics, show_progress
+                    )
+                elif scan_decision.selected_mode == EntityScanMode.ENTITY_SYNC:
+                    await self._perform_entity_sync(
+                        config, collection_name, metrics, show_progress
+                    )
+                elif scan_decision.selected_mode == EntityScanMode.SYNC_ONLY:
+                    await self._enable_entity_sync_only(
+                        config, collection_name, metrics
+                    )
             
             # Phase 3: Enable Entity Monitoring (if configured)
             if config.enable_entity_monitoring:
@@ -653,6 +666,71 @@ class HybridIndexer:
         """Index relations (simplified for now)"""
         # For now, just log relations - full relation indexing can be added later
         logger.info(f"Found {len(relations)} relations (relation indexing TBD)")
+    
+    
+    async def _perform_delta_scan_mode(
+        self,
+        config: IndexingJobConfig,
+        collection_name: str,
+        metrics: IndexingJobMetrics,
+        show_progress: bool
+    ) -> None:
+        """
+        Execute delta-scan mode using the new delta-scan algorithm.
+        
+        This method wraps the perform_delta_scan function to integrate it
+        with the standard indexing metrics and progress tracking.
+        """
+        logger.info(f"Executing delta-scan mode for collection: {collection_name}")
+        
+        start_time = time.perf_counter()
+        
+        def progress_callback(current: int, total: int, details: Dict[str, Any]) -> None:
+            """Convert delta-scan progress to IndexingJobMetrics updates"""
+            if show_progress:
+                # Update metrics with delta-scan progress
+                if 'files_discovered' in details:
+                    metrics.files_discovered = details['files_discovered']
+                if 'entities_processed' in details:
+                    metrics.entities_indexed = details['entities_processed']
+                if 'phase' in details:
+                    logger.debug(f"Delta-scan phase: {details['phase']} ({current}/{total})")
+        
+        try:
+            # Execute the delta-scan with progress tracking
+            delta_result = await self.perform_delta_scan(
+                project_path=config.project_path,
+                collection_name=collection_name,
+                progress_callback=progress_callback,
+                force_full_scan=False  # Use delta logic
+            )
+            
+            # Update metrics with delta-scan results
+            if 'summary' in delta_result:
+                summary = delta_result['summary']
+                metrics.files_processed = summary.get('files_processed', 0)
+                metrics.entities_indexed = summary.get('entities_upserted', 0)
+                metrics.entities_failed = summary.get('entities_failed', 0)
+                
+                # Add delta-specific metrics to errors list for visibility
+                if summary.get('added', 0) > 0:
+                    metrics.errors.append(f"Delta-scan: {summary['added']} files added")
+                if summary.get('modified', 0) > 0:
+                    metrics.errors.append(f"Delta-scan: {summary['modified']} files modified") 
+                if summary.get('deleted', 0) > 0:
+                    metrics.errors.append(f"Delta-scan: {summary['deleted']} files deleted")
+            
+            # Update timing metrics
+            delta_time = time.perf_counter() - start_time
+            metrics.index_time_seconds += delta_time
+            
+            logger.info(f"Delta-scan completed in {delta_time:.2f}s")
+            
+        except Exception as e:
+            error_msg = f"Delta-scan mode failed: {str(e)}"
+            metrics.errors.append(error_msg)
+            logger.error(error_msg, exc_info=True)
+            raise
     
     
     async def _perform_full_entity_scan(
