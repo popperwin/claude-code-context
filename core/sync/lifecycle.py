@@ -425,9 +425,19 @@ class EntityLifecycleManager:
             return StorageResult.successful_insert(self.collection_name, 0, 0)
         
         try:
+            # Deduplicate entities by ID - keep last occurrence
+            entity_dict = {}
+            for entity in entities:
+                entity_dict[entity.id] = entity
+            entities = list(entity_dict.values())
+            
             # Convert entities to QdrantPoint format
             qdrant_points = []
             for entity in entities:
+                # Set indexed_at timestamp on entity (precise per-entity timing)
+                indexed_time = datetime.now()
+                entity = entity.model_copy(update={'indexed_at': indexed_time})
+                
                 qdrant_point = QdrantPoint(
                     id=entity_id_to_qdrant_id(entity.id),
                     vector=[0.0] * 1024,  # Placeholder vector, will be computed by storage client

@@ -6,7 +6,8 @@ operations in the synchronization system.
 """
 
 import hashlib
-from typing import TYPE_CHECKING, Dict, Optional
+from collections import OrderedDict
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from ..models.entities import Entity
@@ -22,9 +23,10 @@ class DeterministicEntityId:
     where old entities can be reliably replaced with new ones.
     """
     
-    # Cache for computed IDs to avoid redundant calculations
-    _id_cache: Dict[str, str] = {}
-    
+    # LRU cache for computed IDs to avoid redundant calculations
+    _MAX_CACHE_SIZE = 1_000_000  # configurable upper bound
+    _id_cache: "OrderedDict[str, str]" = OrderedDict()
+        
     @staticmethod
     def generate(entity: 'Entity', file_hash: str) -> str:
         """
@@ -51,6 +53,8 @@ class DeterministicEntityId:
         cache_key = f"{entity.name}:{entity.entity_type.value}:{entity.location.start_line}:{entity.location.start_column}:{file_hash[:8]}"
         
         if cache_key in DeterministicEntityId._id_cache:
+            # Move to the end to mark as recently used
+            DeterministicEntityId._id_cache.move_to_end(cache_key)
             return DeterministicEntityId._id_cache[cache_key]
         
         # Construct stable content identifier
@@ -59,7 +63,7 @@ class DeterministicEntityId:
             entity.entity_type.value,
             str(entity.location.start_line),
             str(entity.location.start_column),
-            file_hash[:8]  # First 8 chars of file hash for uniqueness
+            file_hash#[:8]  # First 8 chars of file hash for uniqueness
         ]
         
         # Add qualified name if different from name for additional uniqueness
@@ -80,9 +84,13 @@ class DeterministicEntityId:
         # Convert to UUID format (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
         # Use first 32 chars of hash to construct a valid UUID
         entity_id = f"{hash_hex[:8]}-{hash_hex[8:12]}-{hash_hex[12:16]}-{hash_hex[16:20]}-{hash_hex[20:32]}"
-        
-        # Cache the result
+
+        # Cache the result (LRU)
         DeterministicEntityId._id_cache[cache_key] = entity_id
+        DeterministicEntityId._id_cache.move_to_end(cache_key)
+        if len(DeterministicEntityId._id_cache) > DeterministicEntityId._MAX_CACHE_SIZE:
+            # Pop the least recently used item
+            DeterministicEntityId._id_cache.popitem(last=False)
         
         return entity_id
     

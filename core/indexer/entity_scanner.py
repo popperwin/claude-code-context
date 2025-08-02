@@ -488,6 +488,12 @@ class EntityScanner:
                 )
                 updated_entities.append(updated_entity)
             
+            # Deduplicate entities by ID - keep last occurrence
+            entity_dict = {}
+            for entity in updated_entities:
+                entity_dict[entity.id] = entity
+            updated_entities = list(entity_dict.values())
+            
             # Store entities using lifecycle manager if available
             if self.lifecycle_manager:
                 # Use lifecycle manager for atomic operations
@@ -495,6 +501,10 @@ class EntityScanner:
                 
                 qdrant_points = []
                 for entity in updated_entities:
+                    # Set indexed_at timestamp on entity (precise per-entity timing)
+                    indexed_time = datetime.now()
+                    entity = entity.model_copy(update={'indexed_at': indexed_time})
+                    
                     point = QdrantPoint(
                         id=entity_id_to_qdrant_id(entity.id),
                         vector=[0.0] * 1024,  # Placeholder vector
@@ -512,6 +522,10 @@ class EntityScanner:
                 
                 qdrant_points = []
                 for entity in updated_entities:
+                    # Set indexed_at timestamp on entity (precise per-entity timing)
+                    indexed_time = datetime.now()
+                    entity = entity.model_copy(update={'indexed_at': indexed_time})
+                    
                     point = QdrantPoint(
                         id=entity_id_to_qdrant_id(entity.id),
                         vector=[0.0] * 1024,  # Placeholder vector

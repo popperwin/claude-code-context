@@ -407,6 +407,10 @@ class CollectionConsistencyValidator:
                                     from ..models.storage import QdrantPoint
                                     points = []
                                     for entity in entities:
+                                        # Set indexed_at timestamp on entity (precise per-entity timing)
+                                        indexed_time = datetime.now()
+                                        entity = entity.model_copy(update={'indexed_at': indexed_time})
+                                        
                                         point = QdrantPoint(
                                             id=entity_id_to_qdrant_id(entity.id),
                                             vector=[0.0] * 1024,

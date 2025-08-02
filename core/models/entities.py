@@ -169,6 +169,7 @@ class Entity(BaseModel):
     # Timestamps
     created_at: datetime = Field(default_factory=datetime.now)
     last_modified: datetime = Field(default_factory=datetime.now)
+    indexed_at: Optional[datetime] = None  # Set when entity is stored in Qdrant
     
     # Additional metadata
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -320,6 +321,7 @@ class Entity(BaseModel):
             # Timestamps (as ISO strings for Qdrant)
             "created_at": self.created_at.isoformat(),
             "last_modified": self.last_modified.isoformat(),
+            "indexed_at": self.indexed_at.isoformat() if self.indexed_at else None,
             
             # Additional searchable content
             "is_container": self.is_container,

@@ -12,6 +12,7 @@ import hashlib
 from typing import List, Dict, Any, Optional, Callable, AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
+from datetime import datetime
 
 from tqdm.asyncio import tqdm
 
@@ -412,6 +413,10 @@ class BatchIndexer:
             points = []
             for entity, embedding in zip(entities, embeddings):
                 try:
+                    # Set indexed_at timestamp on entity (precise per-entity timing)
+                    indexed_time = datetime.now()
+                    entity = entity.model_copy(update={'indexed_at': indexed_time})
+                    
                     payload = entity.to_qdrant_payload()
                     # Store original entity ID in payload for retrieval
                     payload["entity_id"] = entity.id
