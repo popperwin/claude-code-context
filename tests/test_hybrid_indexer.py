@@ -371,7 +371,16 @@ class TestHybridIndexer:
         """Test entity and relation extraction from parse results"""
         # Create mock entities and relations
         entity1 = Mock(spec=Entity)
+        entity1.id = "test_file.py::entity1"
+        entity1.location = Mock(spec=SourceLocation)
+        entity1.location.file_path = Mock(spec=Path)
+        entity1.location.file_path.read_bytes = Mock(return_value=b"def entity1(): pass")
+        
         entity2 = Mock(spec=Entity)
+        entity2.id = "test_file.py::entity2"
+        entity2.location = Mock(spec=SourceLocation)
+        entity2.location.file_path = Mock(spec=Path)
+        entity2.location.file_path.read_bytes = Mock(return_value=b"def entity2(): pass")
         relation1 = Mock()
         
         # Create mock parse results
@@ -406,7 +415,20 @@ class TestHybridIndexer:
     @pytest.mark.usefixtures("cleanup_test_collections")
     async def test_index_entities(self, indexer, mock_components):
         """Test entity indexing with progress tracking"""
-        entities = [Mock(spec=Entity), Mock(spec=Entity)]
+        # Create proper mock entities with required id and location attributes
+        entity1 = Mock(spec=Entity)
+        entity1.id = "test_file.py::function1"
+        entity1.location = Mock(spec=SourceLocation)
+        entity1.location.file_path = Mock(spec=Path)
+        entity1.location.file_path.read_bytes = Mock(return_value=b"def function1(): pass")
+        
+        entity2 = Mock(spec=Entity)
+        entity2.id = "test_file.py::function2"
+        entity2.location = Mock(spec=SourceLocation)
+        entity2.location.file_path = Mock(spec=Path)
+        entity2.location.file_path.read_bytes = Mock(return_value=b"def function2(): pass")
+        
+        entities = [entity1, entity2]
         project_name = "test-collection"
         metrics = IndexingJobMetrics()
         
@@ -740,7 +762,20 @@ class TestHybridIndexerEntityLevelOperations:
         # Mock parse results
         mock_result1 = Mock(spec=ParseResult)
         mock_result1.success = True
-        mock_result1.entities = [Mock(spec=Entity), Mock(spec=Entity)]
+        # Create mock entities with required attributes
+        mock_entity1 = Mock(spec=Entity)
+        mock_entity1.id = "test_file.py::mock_entity1"
+        mock_entity1.location = Mock(spec=SourceLocation)
+        mock_entity1.location.file_path = Mock(spec=Path)
+        mock_entity1.location.file_path.read_bytes = Mock(return_value=b"def mock_entity1(): pass")
+        
+        mock_entity2 = Mock(spec=Entity)
+        mock_entity2.id = "test_file.py::mock_entity2"
+        mock_entity2.location = Mock(spec=SourceLocation)
+        mock_entity2.location.file_path = Mock(spec=Path)
+        mock_entity2.location.file_path.read_bytes = Mock(return_value=b"def mock_entity2(): pass")
+        
+        mock_result1.entities = [mock_entity1, mock_entity2]
         mock_result1.relations = []
         
         mock_stats = Mock(spec=PipelineStats)
