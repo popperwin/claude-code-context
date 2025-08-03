@@ -211,9 +211,8 @@ class TestEntityLifecycleIntegrationRealLife:
             include_patterns=["*.py", "*.js", "*.ts", "*.go", "*.rs", "*.java"],
             exclude_patterns=["**/node_modules/**", "**/target/**", "**/.git/**", "**/build/**"],
             batch_size=25,
-            # Use entity-level configuration
-            entity_scan_mode="full_rescan",
-            enable_entity_monitoring=True,
+            # Use delta-scan mode instead of legacy entity scan modes
+            enable_delta_scan=True,
             entity_batch_size=50
         )
         

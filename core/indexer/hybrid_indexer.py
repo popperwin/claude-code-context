@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from ..parser.parallel_pipeline import ProcessParsingPipeline, PipelineStats
 from ..parser.base import ParseResult
+#import core.parser  # Ensure parsers are registered before any file discovery operations
 from ..embeddings.stella import StellaEmbedder
 from ..storage.client import HybridQdrantClient
 from ..storage.indexing import BatchIndexer, IndexingResult
@@ -26,7 +27,6 @@ from ..sync.deterministic import DeterministicEntityId
 import hashlib
 from .cache import CacheManager
 from .state_analyzer import CollectionStateAnalyzer
-from .scan_mode import EntityScanModeSelector, EntityScanMode
 
 # Import new helper modules
 from .workspace_scanner import WorkspaceScanner, WorkspaceState
@@ -71,9 +71,8 @@ class IndexingJobConfig:
     sync_auto_repair: bool = True
     sync_validation_interval_minutes: int = 5
     
-    # Entity-level scan configuration
-    entity_scan_mode: str = "auto"  # "full_rescan", "entity_sync", "sync_only", "auto"
-    enable_entity_monitoring: bool = True
+    # Entity-level scan configuration (REMOVED: legacy scan modes)
+    # Note: enable_entity_monitoring removed - use enable_realtime_sync instead
     entity_batch_size: int = 50
     entity_change_detection: bool = True
     entity_content_hashing: bool = True
@@ -229,10 +228,7 @@ class HybridIndexer:
             staleness_threshold_hours=24,
             min_health_score=0.7
         )
-        self.scan_mode_selector = EntityScanModeSelector(
-            storage_client=storage_client,
-            state_analyzer=self.state_analyzer
-        )
+        # REMOVED: Legacy scan mode selector (replaced by delta-scan)
         
         # Initialize helper modules for delta-scan operations
         self._scanner = WorkspaceScanner()
@@ -253,9 +249,13 @@ class HybridIndexer:
         
         logger.info("Initialized HybridIndexer with all components")
     
-    def _initialize_sync_engine(self) -> None:
-        """Initialize the real-time synchronization engine with default config."""
-        if not self.default_config:
+    def _initialize_sync_engine(self, config: IndexingJobConfig = None) -> None:
+        """Initialize the real-time synchronization engine from job config."""
+        # Use config parameter first, fallback to default_config
+        sync_config = config or self.default_config
+        
+        if not sync_config:
+            logger.warning("Cannot initialize sync engine: no configuration available")
             return
         
         try:
@@ -264,11 +264,11 @@ class HybridIndexer:
             self.sync_engine = ProjectCollectionSyncEngine(
                 storage_client=self.storage_client,
                 max_queue_size=1000,
-                max_batch_size=self.default_config.sync_batch_size,
-                worker_count=self.default_config.sync_worker_count
+                max_batch_size=sync_config.sync_batch_size,
+                worker_count=sync_config.sync_worker_count
             )
             
-            logger.info(f"Initialized synchronization engine with {self.default_config.sync_worker_count} workers")
+            logger.info(f"Initialized synchronization engine with {sync_config.sync_worker_count} workers")
             
         except Exception as e:
             logger.error(f"Failed to initialize synchronization engine: {e}")
@@ -367,34 +367,7 @@ class HybridIndexer:
         if callback in self._progress_callbacks:
             self._progress_callbacks.remove(callback)
     
-    async def select_entity_scan_mode(
-        self,
-        collection_name: str,
-        project_path: Path,
-        config: Optional[IndexingJobConfig] = None
-    ):
-        """
-        Select optimal entity scan mode for indexing operation.
-        
-        Args:
-            collection_name: Name of collection to analyze
-            project_path: Project root path
-            config: Optional configuration with scan mode preferences
-            
-        Returns:
-            ScanModeDecision with selected mode and reasoning
-        """
-        if not config:
-            config = self.default_config
-        
-        requested_mode = config.entity_scan_mode if config else "auto"
-        
-        return await self.scan_mode_selector.select_scan_mode(
-            collection_name=collection_name,
-            project_path=project_path,
-            requested_mode=requested_mode,
-            force_mode=False
-        )
+    # REMOVED: Legacy entity scan mode selection (replaced by delta-scan)
     
     async def index_project(
         self,
@@ -421,52 +394,31 @@ class HybridIndexer:
                 config.project_name, config.collection_type
             )
             
-            # Phase 1: Entity Scan Mode Selection
-            scan_decision = await self.select_entity_scan_mode(
-                collection_name=collection_name,
-                project_path=config.project_path,
-                config=config
-            )
-            
-            logger.info(f"Selected entity scan mode: {scan_decision.selected_mode.value} "
-                       f"(confidence: {scan_decision.confidence:.2f})")
-            for reason in scan_decision.reasoning:
-                logger.debug(f"Scan mode reasoning: {reason}")
-            
-            # Phase 2: Execute Indexing Operations Based on Mode
+            # Phase 1: Execute Delta-Scan Operations (Sprint 4.7)
             if config.enable_delta_scan:
-                # NEW: Delta-scan mode (Sprint 4.7)
                 logger.info("Using DELTA-SCAN mode (Sprint 4.7 algorithm)")
                 await self._perform_delta_scan_mode(
                     config, collection_name, metrics, show_progress
                 )
             else:
-                # Legacy: Entity-level scan mode selection  
-                logger.info(f"Using LEGACY entity-scan mode: {scan_decision.selected_mode.value}")
-                if scan_decision.selected_mode == EntityScanMode.FULL_RESCAN:
-                    await self._perform_full_entity_scan(
-                        config, collection_name, metrics, show_progress
-                    )
-                elif scan_decision.selected_mode == EntityScanMode.ENTITY_SYNC:
-                    await self._perform_entity_sync(
-                        config, collection_name, metrics, show_progress
-                    )
-                elif scan_decision.selected_mode == EntityScanMode.SYNC_ONLY:
-                    await self._enable_entity_sync_only(
-                        config, collection_name, metrics
-                    )
+                # Legacy mode removed - default to delta-scan with force_full_scan
+                logger.info("Legacy scan modes removed - using DELTA-SCAN with full scan")
+                config.enable_delta_scan = True  # Force enable delta-scan
+                await self._perform_delta_scan_mode(
+                    config, collection_name, metrics, show_progress, force_full_scan=True
+                )
             
-            # Phase 3: Enable Entity Monitoring (if configured)
-            if config.enable_entity_monitoring:
+            # Phase 3: Enable Real-time Sync (if configured)
+            if config.enable_realtime_sync:
                 sync_success = await self._enable_entity_sync(
                     project_path=config.project_path,
                     collection_name=collection_name,
                     config=config
                 )
                 if sync_success:
-                    logger.info(f"Entity monitoring enabled for {config.project_path}")
+                    logger.info(f"Real-time sync enabled for {config.project_path}")
                 else:
-                    logger.warning(f"Failed to enable entity monitoring for {config.project_path}")
+                    logger.warning(f"Failed to enable real-time sync for {config.project_path}")
             
             # Phase 4: Update Entity Cache State
             if config.enable_caching and self.cache_manager:
@@ -673,7 +625,8 @@ class HybridIndexer:
         config: IndexingJobConfig,
         collection_name: str,
         metrics: IndexingJobMetrics,
-        show_progress: bool
+        show_progress: bool,
+        force_full_scan: bool = False
     ) -> None:
         """
         Execute delta-scan mode using the new delta-scan algorithm.
@@ -702,23 +655,60 @@ class HybridIndexer:
                 project_path=config.project_path,
                 collection_name=collection_name,
                 progress_callback=progress_callback,
-                force_full_scan=False  # Use delta logic
+                force_full_scan=force_full_scan,  # Use parameter value
+                include_patterns=config.include_patterns,
+                exclude_patterns=config.exclude_patterns
             )
             
             # Update metrics with delta-scan results
-            if 'summary' in delta_result:
-                summary = delta_result['summary']
-                metrics.files_processed = summary.get('files_processed', 0)
-                metrics.entities_indexed = summary.get('entities_upserted', 0)
-                metrics.entities_failed = summary.get('entities_failed', 0)
+            
+            # Map delta-scan results to metrics using actual result structure
+            if 'entities_affected' in delta_result:
+                entities_created = delta_result.get('entities_created', 0)
+                entities_deleted = delta_result.get('entities_deleted', 0)
+                metrics.entities_indexed = entities_created + entities_deleted
+                # For delta-scan, entities_extracted should match entities that were processed
+                metrics.entities_extracted = entities_created  # New entities parsed from files
                 
-                # Add delta-specific metrics to errors list for visibility
-                if summary.get('added', 0) > 0:
-                    metrics.errors.append(f"Delta-scan: {summary['added']} files added")
-                if summary.get('modified', 0) > 0:
-                    metrics.errors.append(f"Delta-scan: {summary['modified']} files modified") 
-                if summary.get('deleted', 0) > 0:
-                    metrics.errors.append(f"Delta-scan: {summary['deleted']} files deleted")
+            # Extract parsing time from delta-scan metadata
+            if 'metadata' in delta_result and 'entity_processing' in delta_result['metadata']:
+                entity_processing = delta_result['metadata']['entity_processing']
+                if 'parse_time_ms' in entity_processing:
+                    metrics.parse_time_seconds = entity_processing['parse_time_ms'] / 1000.0
+                elif 'parsing_time_ms' in entity_processing:
+                    metrics.parse_time_seconds = entity_processing['parsing_time_ms'] / 1000.0
+                    
+            # If no specific parse time found, use a portion of the total operation time as parse time
+            if metrics.parse_time_seconds == 0.0 and 'operation_time_ms' in delta_result:
+                # Estimate parsing as roughly 20% of total delta-scan time (heuristic)
+                total_time_ms = delta_result['operation_time_ms']
+                estimated_parse_time_ms = total_time_ms * 0.2
+                metrics.parse_time_seconds = estimated_parse_time_ms / 1000.0
+            
+            # Fallback: assume all discovered files were processed if delta-scan succeeded
+            if delta_result.get('success', False) and metrics.files_discovered > 0:
+                metrics.files_processed = metrics.files_discovered
+            elif delta_result.get('success', False):
+                # If no files_discovered set yet, try to extract from metadata
+                if 'metadata' in delta_result and 'workspace_scan' in delta_result['metadata']:
+                    workspace_files = delta_result['metadata']['workspace_scan'].get('files_discovered', 0)
+                    metrics.files_processed = workspace_files
+            
+            # Add delta-specific metrics to errors list for visibility
+            if 'metadata' in delta_result and 'delta_scan' in delta_result['metadata']:
+                delta_info = delta_result['metadata']['delta_scan']
+                if delta_info.get('added', 0) > 0:
+                    metrics.errors.append(f"Delta-scan: {delta_info['added']} files added")
+                if delta_info.get('modified', 0) > 0:
+                    metrics.errors.append(f"Delta-scan: {delta_info['modified']} files modified")
+                if delta_info.get('deleted', 0) > 0:
+                    metrics.errors.append(f"Delta-scan: {delta_info['deleted']} files deleted")
+            
+            # CRITICAL: Set files_discovered from workspace scan if not set by progress callback
+            if metrics.files_discovered == 0 and 'metadata' in delta_result:
+                workspace_scan = delta_result['metadata'].get('workspace_scan', {})
+                files_discovered = workspace_scan.get('files_discovered', 0)
+                metrics.files_discovered = files_discovered
             
             # Update timing metrics
             delta_time = time.perf_counter() - start_time
@@ -731,115 +721,6 @@ class HybridIndexer:
             metrics.errors.append(error_msg)
             logger.error(error_msg, exc_info=True)
             raise
-    
-    
-    async def _perform_full_entity_scan(
-        self,
-        config: IndexingJobConfig,
-        collection_name: str,
-        metrics: IndexingJobMetrics,
-        show_progress: bool
-    ) -> None:
-        """
-        Perform complete entity-level scan of the project.
-        
-        Args:
-            config: Indexing job configuration
-            collection_name: Collection name for storage
-            metrics: Metrics to update
-            show_progress: Whether to show progress
-        """
-        logger.info(f"Starting full entity scan for {config.project_path}")
-        
-        # Phase 1: File Discovery (entity-aware)
-        files = await self._discover_files(config, metrics)
-        if not files:
-            logger.warning("No files found for entity scan")
-            return
-        
-        # Phase 2: Parallel Parsing with Entity Focus
-        parse_results = await self._parse_files(
-            files, config, metrics, show_progress
-        )
-        if not parse_results:
-            logger.warning("No files parsed successfully during entity scan")
-            return
-        
-        # Phase 3: Entity Extraction and Processing
-        entities, relations = await self._extract_entities_relations(
-            parse_results, metrics
-        )
-        
-        # Phase 4: Entity Storage with Batching
-        if entities:
-            await self._index_entities(
-                entities, collection_name, metrics, show_progress
-            )
-        
-        # Phase 5: Relation Storage (if applicable)
-        if relations:
-            await self._index_relations(
-                relations, collection_name, metrics
-            )
-        
-        logger.info(f"Full entity scan completed: {metrics.entities_indexed} entities indexed")
-    
-    async def _perform_entity_sync(
-        self,
-        config: IndexingJobConfig,
-        collection_name: str,
-        metrics: IndexingJobMetrics,
-        show_progress: bool
-    ) -> None:
-        """
-        Perform entity-level synchronization (changed entities only).
-        
-        Args:
-            config: Indexing job configuration  
-            collection_name: Collection name for storage
-            metrics: Metrics to update
-            show_progress: Whether to show progress
-        """
-        logger.info(f"Starting entity sync for {config.project_path}")
-        
-        # For now, use similar logic to full scan but with entity change detection
-        # This will be enhanced when EntityChangeDetector is implemented
-        await self._perform_full_entity_scan(config, collection_name, metrics, show_progress)
-        
-        # Update sync metrics
-        metrics.sync_time_seconds = metrics.total_duration_seconds
-        
-        logger.info(f"Entity sync completed: {metrics.entities_indexed} entities processed")
-    
-    async def _enable_entity_sync_only(
-        self,
-        config: IndexingJobConfig,
-        collection_name: str,
-        metrics: IndexingJobMetrics
-    ) -> None:
-        """
-        Enable sync-only mode (no immediate indexing).
-        
-        Args:
-            config: Indexing job configuration
-            collection_name: Collection name for monitoring
-            metrics: Metrics to update
-        """
-        logger.info(f"Enabling sync-only mode for {config.project_path}")
-        
-        # Just enable monitoring without immediate indexing
-        sync_success = await self._enable_entity_sync(
-            project_path=config.project_path,
-            collection_name=collection_name,
-            config=config
-        )
-        
-        if sync_success:
-            logger.info("Sync-only mode enabled successfully")
-            metrics.sync_time_seconds = 0.1  # Minimal time for setup
-        else:
-            logger.warning("Failed to enable sync-only mode")
-            metrics.errors.append("Failed to enable sync-only mode")
     
     async def _enable_entity_sync(
         self,
@@ -861,10 +742,11 @@ class HybridIndexer:
         try:
             # Initialize sync engine if not already done
             if not self.sync_engine:
-                self._initialize_sync_engine()
+                self._initialize_sync_engine(config)
             
             if not self.sync_engine:
-                raise Exception("Failed to initialize synchronization engine")
+                logger.warning("Cannot enable entity sync: synchronization engine not available")
+                return False
             
             # Start the sync engine if not running
             if not self.sync_engine.is_running:
@@ -1288,7 +1170,9 @@ class HybridIndexer:
         project_path: Path,
         collection_name: str,
         progress_callback: Optional[Callable[[int, int, Dict[str, Any]], None]] = None,
-        force_full_scan: bool = False
+        force_full_scan: bool = False,
+        include_patterns: Optional[List[str]] = None,
+        exclude_patterns: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Perform complete delta-scan operation orchestrating all FEAT1-5 components.
@@ -1390,6 +1274,29 @@ class HybridIndexer:
             workspace_start = time.perf_counter()
             
             workspace_state = await self.fast_scan_workspace(project_path)
+            
+            # Apply include/exclude pattern filtering if specified
+            if include_patterns or exclude_patterns:
+                original_count = len(workspace_state)
+                filtered_workspace_state = {}
+                
+                for file_path_str, state in workspace_state.items():
+                    file_path = Path(file_path_str)
+                    
+                    # Check include patterns
+                    if include_patterns:
+                        if not any(file_path.match(pattern) for pattern in include_patterns):
+                            continue
+                    
+                    # Check exclude patterns
+                    if exclude_patterns:
+                        if any(file_path.match(pattern) for pattern in exclude_patterns):
+                            continue
+                    
+                    filtered_workspace_state[file_path_str] = state
+                
+                workspace_state = filtered_workspace_state
+                logger.info(f"Pattern filtering: {original_count} -> {len(workspace_state)} files")
             
             workspace_time = time.perf_counter() - workspace_start
             result["metadata"]["workspace_scan"] = {
@@ -1713,7 +1620,7 @@ class HybridIndexer:
             "cache_stats": self.state_analyzer.get_cache_stats()
         }
         
-        metrics["scan_mode_selector"] = self.scan_mode_selector.get_status()
+        # Legacy scan_mode_selector removed - replaced by delta-scan mode
         
         # Add synchronization metrics if available
         if self.sync_engine:

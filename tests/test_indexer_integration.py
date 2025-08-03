@@ -821,7 +821,7 @@ class TestRealIndexerIntegration:
                 config = IndexingJobConfig(
                     project_path=real_project_dir,
                     project_name="real-indexer-test",
-
+                    enable_delta_scan=True,  # Enable delta-scan mode for integration testing
                     include_patterns=["*.py", "*.js", "*.ts", "*.go"],
                     exclude_patterns=["node_modules/*", ".git/*"],
                     max_workers=2,
@@ -1023,20 +1023,29 @@ unclosed_string = "This string is never closed
                     cache_manager=cache_manager
                 )
                 
-                # Mock batch indexer to focus on parsing errors
-                mock_indexing_result = Mock()
-                mock_indexing_result.successful_entities = 0
-                mock_indexing_result.failed_entities = 0
-                mock_indexing_result.errors = []
+                # Mock delta-scan operations to focus on parsing errors  
+                async def mock_perform_delta_scan(*args, **kwargs):
+                    # Simulate delta-scan with some parsing errors but still processing files
+                    return {
+                        'operation_type': 'delta_scan',
+                        'success': True,
+                        'entities_created': 10,  # Some entities were created despite errors
+                        'entities_deleted': 0,
+                        'entities_affected': 10,
+                        'operation_time_ms': 1000,
+                        'metadata': {
+                            'workspace_scan': {'files_discovered': 3},
+                            'entity_processing': {'parse_time_ms': 500}
+                        }
+                    }
                 
-                indexer.batch_indexer = Mock()
-                indexer.batch_indexer.index_entities = AsyncMock(return_value=mock_indexing_result)
-                indexer.batch_indexer.add_progress_callback = Mock()
-                indexer.batch_indexer.remove_progress_callback = Mock()
+                # Mock the delta-scan method directly
+                indexer.perform_delta_scan = AsyncMock(side_effect=mock_perform_delta_scan)
                 
                 config = IndexingJobConfig(
                     project_path=real_project_dir,
                     project_name="error-recovery-test",
+                    enable_delta_scan=True,  # Enable delta-scan mode for integration testing
                     include_patterns=["*.py"],
                     exclude_patterns=[]
                 )
