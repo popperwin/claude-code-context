@@ -1,514 +1,416 @@
 # claude-code-context v1.0.0
 
-🚀 **Semantic context enrichment for Claude Code with local embeddings and direct search capabilities.**
+🚀 **Intelligent code search for Claude Code powered by local embeddings and Claude orchestration.**
 
-A powerful semantic search system that enhances Claude Code with intelligent code context injection using local Stella embeddings and Qdrant vector storage. Enable precise code search and automatic context enrichment through simple `<ccc>query</ccc>` tags in your prompts.
+A sophisticated MCP (Model Context Protocol) server that enhances Claude Code with intelligent code search capabilities. Using Claude's own intelligence to orchestrate searches, local Stella embeddings, and Qdrant vector storage, it provides contextual code understanding through natural language queries.
 
 ## ✨ Features
 
-- 🔍 **Semantic Code Search** - Natural language queries find relevant code across your entire project
-- 🏠 **100% Offline** - Local Stella embeddings, no external API calls required
-- 🚀 **Claude Code Integration** - Seamless context injection via `<ccc>` tags  
-- 📦 **Multi-Project Support** - Isolated collections for unlimited projects
-- ⚡ **High Performance** - <10ms search, 2000 files/minute indexing
-- 🔧 **Zero Configuration** - One-line setup with intelligent defaults
-- 🎯 **Collection-Based Isolation** - Single Qdrant instance, project separation via collections
+- 🧠 **Claude-Powered Search** - Claude intelligently orchestrates multi-step search strategies
+- 🔍 **Natural Language Queries** - Ask questions in plain English, Claude understands context
+- 🏠 **100% Local Operation** - Stella embeddings and Qdrant run entirely offline
+- 📦 **Simple Installation** - One `pip install` command, per-project configuration
+- ⚡ **High Performance** - <10ms payload search, <100ms semantic search
+- 🎯 **Smart Query Analysis** - Automatic selection of optimal search strategy
+- 🔄 **Real-time Sync** - Automatic indexing and live updates as you code
 
 ## 📋 Requirements
 
-- **Python 3.12+**
+- **Python 3.8+**
 - **Docker** (for Qdrant vector database)
-- **5GB+ free disk space** (for Stella model cache)
-- **macOS or Linux** (Windows support planned)
+- **Claude Code CLI** (authenticated via `claude login`)
+- **5GB+ free disk space** (for Stella model)
+- **macOS, Linux, or Windows** (via WSL)
 
 ## 🚀 Quick Start
 
-### 1. Installation
-
-```bash
-# Clone and install
-git clone https://github.com/popperwin/claude-code-context.git
-cd claude-code-context
-
-# Global installation (recommended)
-./install-global.sh
-
-# OR development installation
-./install-global.sh --dev
-```
-
-### 2. Setup Infrastructure
+### 1. Install Qdrant (One-time Setup)
 
 ```bash
 # Start Qdrant vector database
-./scripts/setup-qdrant.sh
-
-# Install Stella embedding model (800MB download)
-python scripts/install_stella.py
+docker run -d --name qdrant -p 6333:6333 \
+  -v ~/qdrant_storage:/qdrant/storage \
+  --restart always qdrant/qdrant
 ```
 
-### 3. Configure Your Project
+### 2. Install claude-code-context
 
 ```bash
-# Setup current project
-./setup-project.sh my-awesome-project
+# Install from PyPI
+pip install claude-code-context
 
-# OR setup specific project path
-./setup-project.sh my-api --path /path/to/project
+# Or install from source
+git clone https://github.com/user/claude-code-context.git
+cd claude-code-context
+pip install -e .
 ```
 
-### 4. Index Your Code
+### 3. Use in Your Project
 
 ```bash
-# Index the project
-claude-indexer index -p . -c my-awesome-project-code
+# Navigate to your project
+cd /path/to/your/project
 
-# Watch for changes (optional)
-claude-indexer watch -p . -c my-awesome-project-code &
+# Initialize claude-code-context
+ccc init
+
+# Start Claude Code
+claude
+
+# Verify MCP connection
+> /mcp
+# Should show: claude-code-context: connected
+
+# Start searching!
+> Find all authentication functions
+> How does error handling work in this codebase?
+> Show me database connection examples
 ```
 
-### 5. Use with Claude Code
+That's it! Claude will intelligently search your codebase and provide relevant context.
 
-Now use `<ccc>query</ccc>` tags in your Claude Code prompts:
+## 🎯 How It Works
 
+### Intelligent Orchestration
+
+When you ask a question, the MCP server:
+1. **Analyzes your query** using Claude's intelligence
+2. **Determines the best search strategy** (exact match, semantic, or hybrid)
+3. **Executes iterative searches** refining results up to 10 times
+4. **Synthesizes findings** into a coherent answer with code examples
+
+### Search Examples
+
+**Natural Language Understanding:**
 ```
-How do I implement user authentication <ccc>user auth login authentication</ccc> in this codebase?
+> How is user authentication implemented in this project?
+[Claude analyzes the conceptual query and searches for auth patterns]
+
+> Explain the database schema and relationships
+[Claude identifies this as an architectural query and searches accordingly]
 ```
 
+**Specific Code Search:**
 ```
-Show me examples of error handling <ccc>error handling exceptions try catch</ccc> patterns.
+> Find all async functions that handle errors
+[Claude recognizes the pattern query and uses hybrid search]
+
+> Show me the UserModel class implementation
+[Claude identifies this as an exact match query for fast results]
 ```
 
+**Focused Search with `<ccc>` Tags (Optional):**
 ```
-Help me understand the API structure <ccc>API routes endpoints handlers</ccc> in this application.
+> I need help with login. Show me <ccc>password hashing bcrypt</ccc> examples
+[Claude focuses specifically on the tagged concept]
+
+> Debug this error <ccc>database connection timeout retry</ccc>
+[Claude searches for relevant error handling patterns]
 ```
 
 ## 🔧 Configuration
 
 ### Project Structure
 
-After setup, your project will have:
+After running `ccc init`, your project will have:
 
 ```
 your-project/
-├── .claude-indexer/
-│   └── config.json          # Project configuration
-├── .claude/
-│   └── settings.json        # Claude Code hook settings
+├── .mcp.json               # MCP server configuration
 └── [your code files]
 ```
 
-### Collections Created
+### MCP Configuration
 
-Each project gets isolated Qdrant collections:
-- `{project-name}-code` - Code entities and functions
-- `{project-name}-relations` - Code relationships  
-- `{project-name}-embeddings` - Semantic embeddings
+The `.mcp.json` file configures the MCP server:
 
-### Configuration Files
-
-**Project Config** (`.claude-indexer/config.json`):
 ```json
 {
-  "name": "my-project",
-  "collection_prefix": "my-project", 
-  "qdrant": {
-    "url": "http://localhost:6333",
-    "collections": {
-      "code": "my-project-code",
-      "relations": "my-project-relations",
-      "embeddings": "my-project-embeddings"
+  "mcpServers": {
+    "claude-code-context": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "claude_code_context.mcp_server"],
+      "env": {
+        "MCP_PROJECT_PATH": ".",
+        "MCP_COLLECTION_NAME": "auto",
+        "MCP_MAX_CLAUDE_CALLS": "10",
+        "QDRANT_URL": "http://localhost:6333"
+      }
     }
-  },
-  "stella": {
-    "model_name": "stella_en_400M_v5",
-    "dimensions": 1024
-  },
-  "indexing": {
-    "include_patterns": ["*.py", "*.js", "*.ts", "*.go", "*.rs"],
-    "exclude_patterns": ["node_modules/*", ".git/*", "__pycache__/*"]
   }
 }
 ```
 
-## 📖 Usage Examples
+### Environment Variables
 
-### Basic Search
+- `MCP_PROJECT_PATH`: Project root directory (default: current directory)
+- `MCP_COLLECTION_NAME`: Qdrant collection name (default: auto-generated)
+- `MCP_MAX_CLAUDE_CALLS`: Maximum search iterations (default: 10)
+- `MCP_DEBUG`: Enable debug logging (default: false)
+- `QDRANT_URL`: Qdrant server URL (default: http://localhost:6333)
+
+## 📖 Command Reference
+
+### CLI Commands (`ccc`)
+
 ```bash
-# Search for functions
-claude-indexer search -c my-project-code -q "authentication function"
+# Initialize project
+ccc init                    # Create .mcp.json in current directory
+ccc init --force           # Overwrite existing configuration
 
-# Search with file type filter  
-claude-indexer search -c my-project-code -q "database" --file-type python
+# Check status
+ccc status                 # Show Qdrant and project status
 
-# Get collection statistics
-claude-indexer stats -c my-project-code
+# Manual operations
+ccc index                  # Manually trigger indexing
+ccc index --full          # Force complete reindex
+ccc clean                  # Remove project from Qdrant
+
+# Debug
+ccc test "query"           # Test search without Claude Code
+ccc test "query" --debug   # Show Claude's reasoning
 ```
 
-### Advanced Claude Code Integration
+### Claude Code Commands
 
-The system uses intelligent QueryAnalyzer to automatically optimize your searches. Understanding these patterns helps you get better results faster.
-
-#### Search Strategy Guide
-
-**🎯 For Exact Matches (Fastest - <10ms):**
-```
-# Use quotes for exact function/class names
-I need to understand <ccc>"UserAuthenticationService"</ccc> implementation.
-
-# Use prefixes for specific searches  
-Help me debug <ccc>name:LoginHandler</ccc> issues.
-
-# Reference specific files
-Show me <ccc>file:auth.py</ccc> authentication logic.
-```
-
-**🧠 For Conceptual Understanding (AI-Powered):**
-```
-# Use natural language for explanations
-<ccc>how does user authentication work in this application</ccc>
-
-# Ask for patterns and examples
-<ccc>show me error handling patterns used in this codebase</ccc>
-
-# Request architectural insights
-<ccc>explain the database connection and session management</ccc>
-```
-
-**⚖️ For Comprehensive Coverage (Balanced):**
-```
-# Combine specific terms with context
-<ccc>async function error handling patterns</ccc>
-
-# Mix code terms with descriptive context
-<ccc>JWT token validation and middleware implementation</ccc>
-
-# Search across related components
-<ccc>user authentication database models and API endpoints</ccc>
-```
-
-#### Query Optimization Examples
-
-**Function Implementation:**
-```
-# Good: Specific + contextual
-I need to implement password validation <ccc>password hashing bcrypt security validation</ccc> for user registration.
-
-# Better: Natural language for understanding
-How should I implement <ccc>secure password validation with hashing and salting</ccc> in this codebase?
-```
-
-**Debugging Help:**
-```
-# Good: Specific error context
-This error is confusing <ccc>database connection timeout retry logic</ccc>, how should I handle it?
-
-# Better: Natural language for patterns
-<ccc>find functions that handle database connection errors and recovery</ccc>
-```
-
-**Architecture Understanding:**
-```
-# Good: Conceptual query
-Explain the data flow <ccc>data models database relationships schema</ccc> in this application.
-
-# Better: Natural explanation request
-<ccc>how does data flow from API endpoints through models to the database</ccc>
-```
-
-**Code Patterns:**
-```
-# Good: Pattern with context
-Show me how to implement <ccc>async operations error handling concurrency</ccc> in this codebase style.
-
-# Better: Example-focused query
-<ccc>show me examples of async error handling and concurrency patterns</ccc>
-```
-
-#### Pro Tips for Better Results
-
-**📊 Query Length Guidelines:**
-- **1-2 words**: Perfect for exact matches (`login`, `UserModel`)
-- **3-5 words**: Good for hybrid searches (`async error handling`)  
-- **6+ words**: Best for semantic searches (`how to implement secure authentication`)
-
-**🎯 Pattern Recognition:**
-- **Quoted text**: `"ExactFunctionName"` → Exact payload search
-- **Prefixes**: `name:`, `file:`, `id:` → Targeted payload search
-- **Questions**: `how`, `what`, `explain` → Semantic understanding
-- **Commands**: `find`, `show`, `help` → Semantic examples
-
-**🚀 Performance Optimization:**
-- Use exact matches when you know the specific name
-- Use semantic searches for learning and exploration
-- Combine both approaches for comprehensive coverage
-- Keep queries focused and relevant to your current task
-
-## 🛠 Management Commands
-
-### Project Management
 ```bash
-# List all configured projects
-claude-indexer list-projects
-
-# Validate project setup
-./scripts/test-project.sh
-
-# Recreate project with new settings
-./setup-project.sh my-project --overwrite
+# In Claude Code
+/mcp                       # Show MCP server status
+/mcp list                  # List available MCP tools
+/mcp debug                 # Enable debug mode
 ```
 
-### Index Management
+## 🚀 Advanced Usage
+
+### Search Strategies
+
+Claude automatically selects the optimal strategy:
+
+**Payload Search (Fastest)** - For specific names and identifiers:
+- Direct function/class names: `UserAuthentication`
+- File references: `auth.py`, `models/user.js`
+- Short specific terms: `login`, `validate`
+
+**Semantic Search (Smartest)** - For conceptual understanding:
+- How-to questions: "How to implement JWT authentication"
+- Pattern finding: "Find all error handling examples"
+- Explanations: "Explain the API structure"
+
+**Hybrid Search (Balanced)** - For comprehensive results:
+- Mixed queries: "async database operations"
+- Contextual searches: "user model validation methods"
+- Broad explorations: "authentication system overview"
+
+### Multi-Project Usage
+
+Each project gets its own isolated collection:
+
 ```bash
-# Full reindex
-claude-indexer index -p . -c my-project-code --rebuild
+# Project 1
+cd /path/to/project1
+ccc init
+# Collection: ccc_project1
 
-# Index specific directory
-claude-indexer index -p ./src -c my-project-code
+# Project 2
+cd /path/to/project2
+ccc init
+# Collection: ccc_project2
 
-# Delete collection (careful!)
-claude-indexer delete -c my-project-code
+# Both projects share the same Qdrant instance
+# but have completely isolated data
 ```
 
-### Infrastructure Management
-```bash
-# Qdrant operations
-./scripts/setup-qdrant.sh status    # Check status
-./scripts/setup-qdrant.sh restart  # Restart Qdrant
-./scripts/setup-qdrant.sh logs     # View logs
+### Performance Optimization
 
-# Stella model management
-python scripts/install_stella.py --info     # Model info
-python scripts/install_stella.py --cleanup  # Remove cached model
-```
+For large codebases (>10k files), adjust settings in `.mcp.json`:
 
-## ⚡ Performance & Optimization
-
-### Performance Targets
-- **Search Latency:** <10ms for payload queries, <50ms for semantic search
-- **Indexing Speed:** 2000+ files per minute  
-- **Memory Usage:** <20MB per 1000 entities
-- **Startup Time:** <2 seconds
-
-### Optimization Tips
-
-**For Large Projects (>10k files):**
 ```json
 {
-  "qdrant": {
-    "batch_size": 200,
-    "parallel_requests": 8
-  },
-  "stella": {
-    "batch_size": 64,
-    "use_fp16": true
+  "env": {
+    "MCP_ENABLE_DELTA_SYNC": "true",
+    "MCP_SANITY_CHECK_INTERVAL": "600",
+    "QDRANT_BATCH_SIZE": "200"
   }
 }
 ```
 
-**For Resource-Constrained Systems:**
-```json
-{
-  "qdrant": {
-    "batch_size": 50,
-    "parallel_requests": 2
-  },
-  "stella": {
-    "batch_size": 16,
-    "use_fp16": false
-  }
-}
+## 🛠 Troubleshooting
+
+### Common Issues
+
+**MCP Server Not Connecting**
+```bash
+# Check if Qdrant is running
+docker ps | grep qdrant
+ccc status
+
+# Restart Qdrant if needed
+docker restart qdrant
+
+# Verify Claude Code sees the MCP config
+cat .mcp.json
 ```
 
-## 🔍 Supported Languages
+**No Search Results**
+```bash
+# Check if project is indexed
+ccc status
 
-Primary support with full AST parsing:
+# Trigger manual indexing
+ccc index --full
+
+# Test search directly
+ccc test "your search query" --debug
+```
+
+**Claude Not Responding**
+```bash
+# Ensure you're logged in to Claude
+claude login
+
+# Check Claude Code is working
+claude --version
+
+# Try with debug mode
+MCP_DEBUG=true claude
+```
+
+**Performance Issues**
+```bash
+# Check Qdrant health
+curl http://localhost:6333/health
+
+# Monitor indexing progress
+ccc index --verbose
+
+# Reduce parallel operations
+# Edit .mcp.json: "MCP_MAX_WORKERS": "2"
+```
+
+### Error Messages
+
+**"Qdrant not running"**
+- Start Qdrant: `docker start qdrant`
+- Check port 6333 is not in use: `lsof -i :6333`
+
+**"Collection not found"**
+- Run `ccc init` in your project
+- Check collection name: `ccc status`
+
+**"Claude login required"**
+- Run `claude login` and follow instructions
+- Ensure you have an active Claude subscription
+
+## 🏗 Architecture
+
+### System Overview
+
+```
+┌─────────────────────┐
+│   Claude Code CLI   │
+│   (User Interface)  │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐     ┌─────────────────────┐
+│    MCP Server       │────▶│   Claude CLI        │
+│ (stdio transport)   │     │  (Orchestrator)     │
+└──────────┬──────────┘     └─────────────────────┘
+           │                           │
+           ▼                           ▼
+┌─────────────────────┐     ┌─────────────────────┐
+│  Search Engine      │     │  Search Strategy    │
+│  (Hybrid Search)    │◀────│   (JSON Format)     │
+└──────────┬──────────┘     └─────────────────────┘
+           │
+           ▼
+┌─────────────────────┐     ┌─────────────────────┐
+│  Qdrant Database    │     │  Stella Embeddings  │
+│  (Vector Storage)   │◀────│   (Local Model)     │
+└─────────────────────┘     └─────────────────────┘
+```
+
+### Key Components
+
+1. **MCP Server** - FastMCP-based server that integrates with Claude Code
+2. **Claude Orchestrator** - Uses Claude CLI to intelligently plan searches
+3. **Search Engine** - Hybrid search with payload and semantic capabilities
+4. **Qdrant** - High-performance vector database for code storage
+5. **Stella** - Local embedding model for semantic understanding
+
+### Data Flow
+
+1. **Query** → MCP Server receives natural language query
+2. **Analysis** → Claude analyzes and creates search strategy
+3. **Search** → Execute strategy using hybrid search engine
+4. **Refinement** → Claude may request additional searches
+5. **Synthesis** → Final results compiled and returned
+
+## 📊 Performance
+
+### Benchmarks
+
+- **Indexing Speed**: 2000+ files/minute
+- **Search Latency**: 
+  - Payload: <10ms
+  - Semantic: <100ms
+  - Hybrid: <150ms
+- **Memory Usage**: <20MB per 1000 entities
+- **Startup Time**: <5 seconds
+
+### Supported Languages
+
+Full AST parsing and semantic understanding:
 - **Python** (.py, .pyi)
-- **JavaScript/TypeScript** (.js, .ts, .jsx, .tsx)  
+- **JavaScript/TypeScript** (.js, .ts, .jsx, .tsx)
 - **Go** (.go)
 - **Rust** (.rs)
 - **Java** (.java)
 - **C/C++** (.c, .cpp, .h, .hpp)
+- **C#** (.cs)
+- **Ruby** (.rb)
+- **PHP** (.php)
+- **Swift** (.swift)
+- **Kotlin** (.kt)
+- **Scala** (.scala)
 
-Additional indexing support:
-- **C#, Ruby, PHP, Swift, Kotlin, Scala**
-- **Configuration files** (.json, .yaml, .toml)
-- **Documentation** (.md, .txt)
-
-## 🔧 Troubleshooting
-
-### Common Issues
-
-**Qdrant Not Accessible**
-```bash
-# Check Qdrant status
-curl http://localhost:6333/health
-
-# Restart Qdrant
-./scripts/setup-qdrant.sh restart
-
-# View logs
-./scripts/setup-qdrant.sh logs
-```
-
-**Collections Not Found**
-```bash
-# Check collections
-curl http://localhost:6333/collections
-
-# Recreate project collections
-./setup-project.sh my-project --overwrite
-```
-
-**Search Returns No Results**
-```bash
-# Check if project is indexed
-claude-indexer stats -c my-project-code
-
-# Reindex if needed
-claude-indexer index -p . -c my-project-code --rebuild
-```
-
-**Hook Not Working**
-- Verify `.claude/settings.json` exists and is valid JSON
-- Check `PROJECT_NAME` and `COLLECTION_PREFIX` environment variables
-- Ensure Qdrant is running and accessible
-- Test hook manually: `python -m hooks.user_prompt_submit`
-
-**Stella Model Issues**
-```bash
-# Reinstall model
-python scripts/install_stella.py --force
-
-# Check model info
-python scripts/install_stella.py --info
-
-# Verify installation
-python scripts/install_stella.py --verify-only
-```
-
-### Performance Issues
-
-**Slow Indexing:**
-- Increase `batch_size` in configuration
-- Use SSD storage for better I/O
-- Exclude large binary directories
-
-**Slow Search:**
-- Check Qdrant resource allocation
-- Reduce `max_results_per_query` for faster responses
-- Use more specific search terms
-
-**High Memory Usage:**
-- Reduce Stella `batch_size`
-- Enable `use_fp16` for GPU acceleration
-- Limit concurrent operations
-
-## 🏗 Architecture
-
-### System Components
-
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Claude Code   │    │  User Prompt    │    │    Semantic     │
-│     Hooks       │◄──►│   Processing    │◄──►│     Search      │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         ▼                       ▼                       ▼
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│  Context Inject │    │   Collection    │    │     Stella      │
-│   <ccc> Tags    │    │   Management    │    │   Embeddings    │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                                │                       │
-                                ▼                       ▼
-                       ┌─────────────────┐    ┌─────────────────┐
-                       │     Qdrant      │    │  Local Model    │
-                       │ Vector Database │    │     Cache       │
-                       └─────────────────┘    └─────────────────┘
-```
-
-### Data Flow
-
-1. **Indexing:** Files → Tree-sitter AST → Entities → Stella Embeddings → Qdrant Collections
-2. **Search:** Query → Stella Embedding → Qdrant Search → Ranked Results  
-3. **Context Injection:** `<ccc>` Tags → Search → Context → Enhanced Prompt
-
-### Project Isolation
-
-Each project gets dedicated collections in the shared Qdrant instance:
-- **Namespace Pattern:** `{project-name}-{collection-type}`
-- **No Data Mixing:** Strict collection-based isolation
-- **Resource Sharing:** Single Qdrant instance for efficiency
-- **Independent Configuration:** Per-project settings and patterns
+Configuration and documentation:
+- **JSON, YAML, TOML**
+- **Markdown, Text**
+- **HTML, CSS**
 
 ## 🤝 Contributing
+
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
 
 ### Development Setup
 
 ```bash
 # Clone repository
-git clone https://github.com/popperwin/claude-code-context.git
+git clone https://github.com/user/claude-code-context.git
 cd claude-code-context
 
-# Development installation
-./install-global.sh --dev
-
-# Install development dependencies
+# Install in development mode
 pip install -e .[dev]
 
 # Run tests
-python -m pytest tests/ -v
+pytest
 
-# Code formatting
-python -m black .
-python -m isort .
+# Format code
+black claude_code_context
+isort claude_code_context
 
 # Type checking
-python -m mypy core/ config/ scripts/
+mypy claude_code_context
 ```
 
-### Testing
+## 📚 Resources
 
-```bash
-# Unit tests
-python -m pytest tests/test_*.py -v
-
-# Integration tests  
-python -m pytest tests/test_integration.py -v
-
-# Performance tests
-python -m pytest tests/test_integration.py::TestPerformanceIntegration -v
-
-# Test project setup
-./scripts/test-project.sh --quick
-```
-
-### Code Style
-
-- **Python 3.12+** with type hints
-- **Black** formatting (88 char limit)
-- **Google-style** docstrings
-- **Pydantic v2** for data validation
-- **Async/await** for I/O operations
-
-## 📚 Documentation
-
-### API Documentation
-- [Core Models API](docs/api/models.md)
-- [Configuration API](docs/api/config.md) 
-- [Search API](docs/api/search.md)
-- [Embeddings API](docs/api/embeddings.md)
-
-### Guides
-- [Advanced Configuration](docs/guides/configuration.md)
-- [Performance Tuning](docs/guides/performance.md)
-- [Multi-Project Setup](docs/guides/multi-project.md)
-- [Custom Embeddings](docs/guides/embeddings.md)
-
-### Examples
-- [Claude Code Workflows](examples/claude-workflows.md)
-- [Search Patterns](examples/search-patterns.md)
-- [Integration Examples](examples/integrations.md)
+- **Documentation**: [docs/](docs/)
+- **Examples**: [examples/](examples/)
+- **API Reference**: [docs/api.md](docs/api.md)
+- **Troubleshooting**: [docs/troubleshooting.md](docs/troubleshooting.md)
 
 ## 📄 License
 
@@ -516,21 +418,20 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## 🙏 Acknowledgments
 
-- **Anthropic** - Claude Code platform and inspiration
-- **Qdrant** - High-performance vector database
+- **Anthropic** - Claude and Model Context Protocol
+- **Qdrant** - Vector database technology
 - **Infgrad** - Stella embedding models
-- **Tree-sitter** - Universal code parsing
-- **Hugging Face** - Model hosting and transformers library
+- **Tree-sitter** - Code parsing infrastructure
 
 ## 🔗 Links
 
-- **Documentation:** [https://docs.anthropic.com/claude-code](https://docs.anthropic.com/claude-code)
-- **Issues:** [https://github.com/popperwin/claude-code-context/issues](https://github.com/popperwin/claude-code-context/issues)
-- **Discussions:** [https://github.com/popperwin/claude-code-context/discussions](https://github.com/popperwin/claude-code-context/discussions)
-- **Claude Code:** [https://claude.ai/code](https://claude.ai/code)
+- **MCP Documentation**: [modelcontextprotocol.io](https://modelcontextprotocol.io)
+- **Claude Code**: [claude.ai](https://claude.ai)
+- **Issues**: [GitHub Issues](https://github.com/user/claude-code-context/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/user/claude-code-context/discussions)
 
 ---
 
-**⚡ Built for developers who want intelligent code context without complexity.**
+**⚡ Intelligent code search that understands your questions.**
 
-Made with ❤️ by the Claude Code team.
+Made with ❤️ for developers who think in natural language.

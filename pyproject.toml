@@ -44,6 +44,10 @@ dependencies = [
     "click>=8.1.0,<9.0.0",
     "rich>=13.7.0,<14.0.0",
     
+    # MCP (Model Context Protocol) support
+    "mcp>=1.3.0,<2.0.0",
+    "fastmcp>=2.11.0,<3.0.0",
+    
     # Vector database
     "qdrant-client>=1.7.0,<2.0.0",
     
@@ -122,6 +126,7 @@ Issues = "https://github.com/popperwin/claude-code-context/issues"
 [project.scripts]
 claude-indexer = "cli.main:cli"
 claude-code-context = "cli.main:cli"
+ccc = "claude_code_context.cli:cli"
 ccc-setup = "scripts.setup_project:main"
 
 [tool.hatch.version]
@@ -135,6 +140,7 @@ include = [
     "templates/",
     "cli/",
     "hooks/",
+    "claude_code_context/",
     "*.md",
     "*.toml",
     "*.yml",
@@ -151,7 +157,7 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["core", "config", "scripts", "cli", "hooks"]
+packages = ["core", "config", "scripts", "cli", "hooks", "claude_code_context"]
 
 [tool.black]
 line-length = 88
@@ -177,8 +183,8 @@ extend-exclude = '''
 [tool.isort]
 profile = "black"
 line_length = 88
-known_first_party = ["core", "config", "scripts", "cli", "hooks"]
-known_third_party = ["pydantic", "click", "qdrant_client", "torch", "transformers"]
+known_first_party = ["core", "config", "scripts", "cli", "hooks", "claude_code_context"]
+known_third_party = ["pydantic", "click", "qdrant_client", "torch", "transformers", "mcp", "fastmcp"]
 multi_line_output = 3
 include_trailing_comma = true
 force_grid_wrap = 0
@@ -239,7 +245,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["core", "config", "scripts", "cli", "hooks"]
+source = ["core", "config", "scripts", "cli", "hooks", "claude_code_context"]
 omit = [
     "*/tests/*",
     "*/test_*",
