@@ -65,19 +65,32 @@ class MCPCodeContextServer:
         # Initialize FastMCP server
         self.mcp = FastMCP("claude-code-context")
         self._register_tools()
+        self._register_prompts()
         
         logger.info(f"🚀 MCP Server initialized for project: {self.config.project_path}")
         logger.info(f"📂 Collection: {self.config.get_collection_name()}")
     
     def _load_config_from_env(self) -> MCPServerConfig:
         """Load configuration from environment variables"""
-        return MCPServerConfig(
-            project_path=Path(os.getenv("MCP_PROJECT_PATH", ".")),
-            collection_name=os.getenv("MCP_COLLECTION_NAME", "auto"),
-            max_claude_calls=int(os.getenv("MCP_MAX_CLAUDE_CALLS", "10")),
-            debug_mode=os.getenv("MCP_DEBUG", "false").lower() == "true",
-            qdrant_url=os.getenv("QDRANT_URL", "http://localhost:6333"),
-        )
+        config_dict = {
+            "project_path": Path(os.getenv("MCP_PROJECT_PATH", ".")),
+            "collection_name": os.getenv("MCP_COLLECTION_NAME", "auto"),
+            "max_claude_calls": int(os.getenv("MCP_MAX_CLAUDE_CALLS", "10")),
+            "debug_mode": os.getenv("MCP_DEBUG", "false").lower() == "true",
+            "qdrant_url": os.getenv("QDRANT_URL", "http://localhost:6333"),
+        }
+        
+        # Add result filtering settings if specified
+        if os.getenv("MCP_MAX_RESULTS"):
+            config_dict["max_results"] = int(os.getenv("MCP_MAX_RESULTS"))
+        if os.getenv("MCP_PAYLOAD_MIN_SCORE"):
+            config_dict["payload_min_score"] = float(os.getenv("MCP_PAYLOAD_MIN_SCORE"))
+        if os.getenv("MCP_SEMANTIC_MIN_SCORE"):
+            config_dict["semantic_min_score"] = float(os.getenv("MCP_SEMANTIC_MIN_SCORE"))
+        if os.getenv("MCP_HYBRID_MIN_SCORE"):
+            config_dict["hybrid_min_score"] = float(os.getenv("MCP_HYBRID_MIN_SCORE"))
+        
+        return MCPServerConfig(**config_dict)
     
     def _register_tools(self) -> None:
         """Register MCP tools with FastMCP"""
@@ -108,15 +121,31 @@ class MCPCodeContextServer:
                 response = await self.search_executor.execute_search(search_request)
                 
                 self.requests_handled += 1
-                return response.model_dump(mode='json')
+                self.total_response_time += response.execution_time_ms if response.execution_time_ms else 0
                 
+                # Return the response as a dictionary for FastMCP to serialize
+                # FastMCP will automatically wrap this in JSON-RPC format
+                return response.model_dump(mode='json', exclude_none=True)
+                
+            except ValueError as e:
+                # Handle validation errors
+                logger.error(f"Search validation error: {e}")
+                return {
+                    "success": False,
+                    "error_message": f"Invalid request: {str(e)}",
+                    "results": [],
+                    "total_found": 0,
+                    "request_id": f"search_{self.requests_handled + 1}"
+                }
             except Exception as e:
+                # Handle other errors
                 logger.error(f"Search error: {e}")
                 return {
                     "success": False,
                     "error_message": str(e),
                     "results": [],
-                    "total_found": 0
+                    "total_found": 0,
+                    "request_id": f"search_{self.requests_handled + 1}"
                 }
         
         @self.mcp.tool()
@@ -151,9 +180,10 @@ class MCPCodeContextServer:
                 )
                 
                 # Combine with orchestrator health
-                health_dict = health.model_dump(mode='json')
+                health_dict = health.model_dump(mode='json', exclude_none=True)
                 health_dict["orchestrator_health"] = orchestrator_health
                 
+                # Return the health dict for FastMCP to serialize
                 return health_dict
                 
             except Exception as e:
@@ -163,7 +193,99 @@ class MCPCodeContextServer:
                     "healthy": False,
                     "error_details": {"error": str(e)}
                 }
+        
+        # Register a resource for server info
+        @self.mcp.resource("ccc://server/info")
+        async def get_server_info() -> Dict[str, Any]:
+            """
+            Get server information and capabilities.
+            
+            Returns static information about the MCP server including version,
+            capabilities, and configuration.
+            """
+            return {
+                "name": "claude-code-context",
+                "version": "1.0.0",
+                "description": "Intelligent code search with Claude orchestration",
+                "capabilities": {
+                    "search_modes": ["auto", "payload", "semantic", "hybrid"],
+                    "max_results": 50,
+                    "claude_orchestration": self._check_claude_cli_available(),
+                    "project_context": True,
+                    "incremental_indexing": True
+                },
+                "configuration": {
+                    "project_path": str(self.config.project_path),
+                    "collection_name": self.config.get_collection_name(),
+                    "max_claude_calls": self.config.max_claude_calls,
+                    "context_word_limit": self.config.context_word_limit,
+                    "qdrant_url": self.config.qdrant_url
+                }
+            }
     
+    def _register_prompts(self) -> None:
+        """Register MCP prompts for common search patterns"""
+        
+        @self.mcp.prompt()
+        async def find_implementation(function_name: str) -> str:
+            """
+            Find the implementation of a specific function or class.
+            
+            Args:
+                function_name: Name of the function or class to find
+            
+            Returns:
+                Prompt template for finding implementations
+            """
+            return f"""Please search for the implementation of '{function_name}' in the codebase.
+Look for:
+- Function or class definition
+- Method implementations
+- Related helper functions
+- Usage examples if available
+
+Use the search_codebase tool with mode='hybrid' for best results."""
+        
+        @self.mcp.prompt()
+        async def analyze_dependencies(module_name: str) -> str:
+            """
+            Analyze dependencies and relationships for a module.
+            
+            Args:
+                module_name: Name of the module to analyze
+            
+            Returns:
+                Prompt template for dependency analysis
+            """
+            return f"""Please analyze the dependencies and relationships for the module '{module_name}'.
+Look for:
+- What this module imports
+- What imports this module
+- External dependencies
+- Internal module relationships
+
+Start with a payload search for imports, then use semantic search for relationships."""
+        
+        @self.mcp.prompt()
+        async def find_security_issues(area: str = "authentication") -> str:
+            """
+            Search for potential security issues in specified area.
+            
+            Args:
+                area: Area to focus on (default: authentication)
+            
+            Returns:
+                Prompt template for security analysis
+            """
+            return f"""Please search for potential security issues in the {area} area of the codebase.
+Focus on:
+- Input validation gaps
+- Authentication/authorization flaws
+- Unsafe data handling
+- Potential injection points
+- Missing error handling
+
+Use semantic search to find related security patterns and anti-patterns."""
     
     async def _check_qdrant_connection(self) -> bool:
         """Check if Qdrant is accessible"""

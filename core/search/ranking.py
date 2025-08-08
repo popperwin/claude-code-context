@@ -493,6 +493,10 @@ class ResultRanker:
         for rank, (entity_id, combined_score) in enumerate(sorted_entities, 1):
             if entity_id in all_results:
                 result = all_results[entity_id]
+                
+                # No capping - scores can exceed 1.0 when entity appears in both searches
+                # This is expected behavior for unbounded scoring systems
+                
                 # Create new result with fused score and correct rank
                 fused_result = SearchResult(
                     point=result.point,

@@ -458,6 +458,10 @@ class HybridQdrantClient:
                 # Calculate relevance score based on text matching
                 score = self._calculate_payload_score(query, point.payload)
                 
+                print(f"[DEBUG] Creating SearchResult with score={score} for entity={point.payload.get('entity_name', 'unknown')}")
+                if score > 1.0:
+                    print(f"[WARNING] Score {score} exceeds 1.0! This will fail validation.")
+                
                 result = SearchResult(
                     point=qdrant_point,
                     score=score,
@@ -546,14 +550,20 @@ class HybridQdrantClient:
                     payload=scored_point.payload or {}
                 )
                 
+                # Ensure semantic scores from Qdrant are normalized to 0-1 range
+                # Qdrant cosine similarity can sometimes exceed 1.0 due to numerical precision
+                normalized_score = min(scored_point.score, 1.0)
+                if scored_point.score > 1.0:
+                    print(f"[DEBUG] Capping semantic score {scored_point.score} to 1.0")
+                
                 result = SearchResult(
                     point=qdrant_point,
-                    score=scored_point.score,
+                    score=normalized_score,
                     query=query,
                     search_type=SearchMode.SEMANTIC_ONLY,
                     rank=i + 1,
                     total_results=len(search_results),
-                    semantic_score=scored_point.score
+                    semantic_score=normalized_score
                 )
                 results.append(result)
             
@@ -625,10 +635,9 @@ class HybridQdrantClient:
                 logger.warning(f"Semantic search failed: {semantic_results}")
                 semantic_results = []
             
-            # Combine and rank results
-            combined_results = self._combine_search_results(
-                query, payload_results, semantic_results,
-                payload_weight, semantic_weight
+            # Combine and rank results using Reciprocal Rank Fusion (RRF)
+            combined_results = self._combine_search_results_rrf(
+                query, payload_results, semantic_results
             )
             
             processing_time = (time.time() - start_time) * 1000
@@ -733,11 +742,14 @@ class HybridQdrantClient:
         payload: Dict[str, Any]
     ) -> float:
         """Calculate intelligent relevance score for simplified tiered payload search"""
+        
         if not payload:
             return 0.0
         
         query_lower = query.lower().strip()
         score = 0.0
+        
+        print(f"\n[DEBUG] _calculate_payload_score for query: '{query_lower}'")
         
         # Field importance weights for three-tier approach
         field_weights = {
@@ -778,24 +790,41 @@ class HybridQdrantClient:
             if field_value_lower == query_lower:
                 # Tier 1: Exact match - highest priority  
                 match_score = field_weight * match_type_scores["exact"]
+                print(f"  [DEBUG] Field '{field}' = '{field_value_lower}' EXACT match: {match_score}")
             elif field_value_lower.startswith(query_lower):
                 # Tier 2: Prefix match - high priority
                 match_score = field_weight * match_type_scores["prefix"]
+                print(f"  [DEBUG] Field '{field}' = '{field_value_lower}' PREFIX match: {match_score}")
             elif query_lower in field_value_lower:
                 # Tier 3: Contains match - lower priority (for content fields)
                 match_score = field_weight * match_type_scores["contains"]
+                print(f"  [DEBUG] Field '{field}' = '{field_value_lower}' CONTAINS match: {match_score}")
             
             score += match_score
         
         # Add entity type bonus for final ranking
         entity_type = payload.get("entity_type", "").lower()
         if entity_type in entity_type_bonus:
-            score += entity_type_bonus[entity_type]
+            bonus = entity_type_bonus[entity_type]
+            score += bonus
+            print(f"  [DEBUG] Entity type '{entity_type}' bonus: {bonus}")
         
-        # Normalize to 0-1 range as required by SearchResult validation
-        # Updated max for three-tier scoring (max 1.0 + 0.9 + 0.4 + 0.2 + 0.2 = 2.7)
-        max_theoretical_score = 2.7
-        return min(score / max_theoretical_score, 1.0)
+        print(f"  [DEBUG] RAW SCORE before adjustment: {score}")
+        
+        # Return raw score without normalization
+        # Scores represent match quality and can naturally vary based on the scoring formula
+        # No artificial ceiling - let multiplicative boosts in ranking push scores above 1.0 if warranted
+        if score <= 0:
+            print(f"  [DEBUG] Score <= 0, returning 0.0")
+            return 0.0
+
+        # Optional: Apply gentle gamma adjustment for score distribution
+        # This doesn't cap scores, just adjusts the distribution curve
+        gamma = 0.85
+        adjusted = score ** gamma
+        
+        print(f"  [DEBUG] FINAL SCORE after gamma({gamma}): {adjusted} (raw={score})")
+        return adjusted
     
     def _combine_search_results(
         self,
@@ -806,6 +835,10 @@ class HybridQdrantClient:
         semantic_weight: float
     ) -> List[SearchResult]:
         """Combine and rank payload and semantic search results"""
+        print(f"\n[DEBUG] _combine_search_results called")
+        print(f"  payload_weight={payload_weight}, semantic_weight={semantic_weight}")
+        print(f"  weights sum={payload_weight + semantic_weight}")
+        
         # Create lookup for semantic scores
         semantic_scores = {result.point.id: result.score for result in semantic_results}
         payload_scores = {result.point.id: result.score for result in payload_results}
@@ -875,6 +908,75 @@ class HybridQdrantClient:
             )
             final_results.append(final_result)
         
+        return final_results
+
+    def _combine_search_results_rrf(
+        self,
+        query: str,
+        payload_results: List[SearchResult],
+        semantic_results: List[SearchResult],
+        k: int = 60
+    ) -> List[SearchResult]:
+        """
+        Combine and rank payload and semantic search results using Reciprocal Rank Fusion (RRF).
+
+        RRF is robust to score scale differences by operating on ranks. The constant k
+        controls the contribution decay by rank; k=60 is a common default in industry.
+        """
+        print(f"\n[DEBUG] _combine_search_results_rrf called (k={k})")
+
+        # Sort the two result lists by their native scores (descending)
+        payload_sorted = sorted(payload_results, key=lambda r: r.score, reverse=True)
+        semantic_sorted = sorted(semantic_results, key=lambda r: r.score, reverse=True)
+
+        rrf_scores: Dict[str, float] = {}
+        result_map: Dict[str, SearchResult] = {}
+
+        # Score from payload results based on rank
+        for rank, result in enumerate(payload_sorted, 1):
+            point_id = result.point.id
+            rrf_scores[point_id] = rrf_scores.get(point_id, 0.0) + 1.0 / (k + rank)
+            if point_id not in result_map:
+                result_map[point_id] = result
+
+        # Score from semantic results based on rank
+        for rank, result in enumerate(semantic_sorted, 1):
+            point_id = result.point.id
+            rrf_scores[point_id] = rrf_scores.get(point_id, 0.0) + 1.0 / (k + rank)
+            if point_id not in result_map:
+                result_map[point_id] = result
+
+        # Sort by fused RRF scores
+        sorted_items = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+
+        final_results: List[SearchResult] = []
+        total_count = len(sorted_items)
+
+        # Optional: capture original sub-scores for transparency
+        payload_score_lookup = {r.point.id: r.score for r in payload_results}
+        semantic_score_lookup = {r.point.id: r.score for r in semantic_results}
+
+        # Scale RRF scores into approx 0..1 range to satisfy downstream threshold expectations.
+        # With two lists, the theoretical maximum is 2/(k+1). We scale by (k+1)/2 so the max becomes ~1.0.
+        scale = (k + 1) / 2.0 if k > 0 else 1.0
+
+        for idx, (point_id, fused_score_raw) in enumerate(sorted_items):
+            base = result_map[point_id]
+            fused_score = fused_score_raw * scale
+            final_results.append(
+                SearchResult(
+                    point=base.point,
+                    score=fused_score,
+                    query=query,
+                    search_type=SearchMode.HYBRID,
+                    rank=idx + 1,
+                    total_results=total_count,
+                    relevance_score=fused_score,
+                    semantic_score=semantic_score_lookup.get(point_id, 0.0),
+                    keyword_score=payload_score_lookup.get(point_id, 0.0),
+                )
+            )
+
         return final_results
     
     async def count_points_by_filter(

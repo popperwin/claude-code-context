@@ -186,7 +186,7 @@ class SearchResult(BaseModel):
     
     # Result identification
     point: QdrantPoint
-    score: float = Field(ge=0.0, le=1.0)
+    score: float = Field(ge=0.0)  # No upper limit - ranking boosts can exceed 1.0
     
     # Search context
     query: str
@@ -197,16 +197,16 @@ class SearchResult(BaseModel):
     total_results: int = Field(ge=1)
     
     # Additional scoring
-    relevance_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    semantic_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    keyword_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    relevance_score: Optional[float] = Field(default=None, ge=0.0)  # No upper limit
+    semantic_score: Optional[float] = Field(default=None, ge=0.0)  # No upper limit
+    keyword_score: Optional[float] = Field(default=None, ge=0.0)  # No upper limit
     
     @field_validator('score')
     @classmethod
     def validate_score(cls, v: float) -> float:
         """Ensure score is reasonable"""
-        if v < 0.0 or v > 1.0:
-            raise ValueError('Score must be between 0.0 and 1.0')
+        if v < 0.0:
+            raise ValueError('Score must be non-negative')
         return round(v, 6)  # Limit precision
     
     @property

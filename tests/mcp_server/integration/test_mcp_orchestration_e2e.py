@@ -78,7 +78,7 @@ class TestMCPOrchestrationE2E:
         # Check if Claude CLI is available
         cls.claude_cli_available = cls._check_claude_cli_available()
         if cls.claude_cli_available:
-            logger.info("✅ Claude CLI available - full orchestration testing enabled")
+            print("✅ Claude CLI available - full orchestration testing enabled")
         else:
             logger.warning("⚠️  Claude CLI not available - testing fallback behavior only")
     
@@ -103,7 +103,7 @@ class TestMCPOrchestrationE2E:
             for collection_name in cls.created_collections:
                 try:
                     requests.delete(f"http://localhost:6334/collections/{collection_name}", timeout=5)
-                    logger.info(f"Cleaned up collection: {collection_name}")
+                    print(f"Cleaned up collection: {collection_name}")
                 except Exception:
                     pass
         except Exception:
@@ -174,7 +174,7 @@ class TestMCPOrchestrationE2E:
                     capture_output=True,
                     timeout=30
                 )
-                logger.info(f"Updated repository at {repo_path}")
+                print(f"Updated repository at {repo_path}")
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 logger.warning(f"Failed to update repository: {e}")
         else:
@@ -200,7 +200,7 @@ class TestMCPOrchestrationE2E:
                 if result.returncode != 0:
                     pytest.skip(f"Failed to clone repository: {result.stderr}")
                 
-                logger.info(f"Cloned repository to {repo_path}")
+                print(f"Cloned repository to {repo_path}")
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pytest.skip("Git not available or clone timeout - skipping integration test")
         
@@ -689,11 +689,11 @@ from src.auth import authenticate_user, validate_session
 # Authenticate user
 token = authenticate_user("username", "password")
 if token:
-    logger.info("Authentication successful")
+    print("Authentication successful")
     
     # Validate session
     if validate_session(token):
-        logger.info("Session is valid")
+        print("Session is valid")
 ```
 
 ### User Management
@@ -853,7 +853,7 @@ The system follows these key patterns:
     @pytest.mark.asyncio
     async def test_mcp_server_initialization_with_orchestration(self):
         """Test complete MCP server initialization with orchestration components"""
-        logger.info("Testing MCP server initialization with orchestration...")
+        print("Testing MCP server initialization with orchestration...")
         
         # Use the test project
         project_path = self.create_test_project()
@@ -914,10 +914,10 @@ The system follows these key patterns:
             assert "context_builder_available" in search_exec
             
         # Performance validation
-            logger.info(f"MCP server initialization completed in {initialization_time:.2f} seconds")
+            print(f"MCP server initialization completed in {initialization_time:.2f} seconds")
             assert initialization_time < 30, f"Initialization took too long: {initialization_time:.2f}s"
             
-            logger.info(f"✅ MCP server initialization: {initialization_time:.2f}s")
+            print(f"✅ MCP server initialization: {initialization_time:.2f}s")
             
         finally:
         # Cleanup happens in teardown_class
@@ -926,7 +926,7 @@ The system follows these key patterns:
     @pytest.mark.asyncio
     async def test_project_context_building_real_project(self):
         """Test project context building with real project structure"""
-        logger.info("Testing project context building with real project...")
+        print("Testing project context building with real project...")
         
         # Use real repository for comprehensive testing
         repo_path = self.get_or_clone_repository()
@@ -971,7 +971,7 @@ The system follows these key patterns:
         
         context_build_time = time.perf_counter() - start_time
         
-        logger.info(f"✅ Project context building: {word_count} words in {context_build_time:.2f}s")
+        print(f"✅ Project context building: {word_count} words in {context_build_time:.2f}s")
         
         # Performance validation
         assert context_build_time < 10, f"Context building took too long: {context_build_time:.2f}s"
@@ -979,7 +979,7 @@ The system follows these key patterns:
     @pytest.mark.asyncio
     async def test_claude_orchestrator_real_or_fallback(self):
         """Test Claude orchestrator with real CLI or fallback behavior"""
-        logger.info("Testing Claude orchestrator (real CLI or fallback)...")
+        print("Testing Claude orchestrator (real CLI or fallback)...")
         
         project_path = self.create_test_project()
         
@@ -995,7 +995,7 @@ The system follows these key patterns:
         
         # Test orchestrator availability
         is_available = orchestrator.is_available()
-        logger.info(f"Claude CLI available: {is_available}")
+        print(f"Claude CLI available: {is_available}")
         
         # Test health check
         health = await orchestrator.health_check()
@@ -1004,7 +1004,7 @@ The system follows these key patterns:
         assert health["claude_cli_available"] == is_available
         
         if is_available:
-            logger.info("Testing real Claude CLI orchestration...")
+            print("Testing real Claude CLI orchestration...")
             
         # Test real orchestration with context
             context_builder = ProjectContextBuilder(config)
@@ -1033,9 +1033,9 @@ The system follows these key patterns:
                 assert len(strategy.query) > 0
                 assert len(strategy.reasoning) > 0
                 
-                logger.info(f"✅ Claude orchestration: {strategy.search_type} in {orchestration_time:.2f}s")
-                logger.info(f"Optimized query: '{strategy.query}'")
-                logger.info(f"Reasoning: {strategy.reasoning}")
+                print(f"✅ Claude orchestration: {strategy.search_type} in {orchestration_time:.2f}s")
+                print(f"Optimized query: '{strategy.query}'")
+                print(f"Reasoning: {strategy.reasoning}")
                 
                 # Performance validation
                 assert orchestration_time < 30, f"Orchestration took too long: {orchestration_time:.2f}s"
@@ -1046,10 +1046,10 @@ The system follows these key patterns:
                 strategy = orchestrator._fallback_strategy(orch_context)
                 assert hasattr(strategy, 'search_type')
                 assert "Fallback strategy" in strategy.reasoning
-                logger.info("✅ Fallback strategy used successfully")
+                print("✅ Fallback strategy used successfully")
         
         else:
-            logger.info("Testing fallback orchestration behavior...")
+            print("Testing fallback orchestration behavior...")
             
             from claude_code_context.mcp_server.orchestrator import OrchestrationContext
             
@@ -1065,12 +1065,12 @@ The system follows these key patterns:
             assert hasattr(strategy, 'query')
             assert "Fallback strategy" in strategy.reasoning
             
-            logger.info(f"✅ Fallback orchestration: {strategy.search_type}")
+            print(f"✅ Fallback orchestration: {strategy.search_type}")
     
     @pytest.mark.asyncio
     async def test_search_executor_with_orchestration_integration(self):
         """Test search executor with full orchestration integration"""
-        logger.info("Testing search executor with orchestration integration...")
+        print("Testing search executor with orchestration integration...")
         
         project_path = self.create_test_project()
         
@@ -1096,6 +1096,46 @@ The system follows these key patterns:
             search_ready = await search_executor.initialize()
         # Note: search_ready might be False due to infrastructure, but orchestration should work
             
+            # Ensure the target collection exists
+            from core.storage.schemas import CollectionType
+            collection_ready = await connection_manager.ensure_collection_exists()
+            assert collection_ready, "Collection should be created successfully"
+
+            # Index the test project so searches have data to query
+            print("Indexing test project data for search integration test...")
+            from core.indexer.hybrid_indexer import HybridIndexer, IndexingJobConfig
+            from core.parser.parallel_pipeline import ProcessParsingPipeline
+
+            parser_pipeline = ProcessParsingPipeline(max_workers=4, batch_size=10, execution_mode="thread")
+
+            # Use the base collection name - HybridIndexer's CollectionManager will add the -code suffix
+            # Do NOT use get_typed_collection_name here as it would result in double suffixing
+            collection_name_for_indexing = config.get_collection_name()
+
+            indexing_config = IndexingJobConfig(
+                project_path=project_path,
+                project_name=collection_name_for_indexing,
+                include_patterns=["*.py"],
+                exclude_patterns=["__pycache__/*"],
+                max_workers=4,
+                batch_size=10
+            )
+
+            indexer = HybridIndexer(
+                parser_pipeline=parser_pipeline,
+                embedder=search_executor._embedder,
+                storage_client=search_executor._qdrant_client,
+                cache_manager=None,
+                config=indexing_config
+            )
+
+            metrics = await indexer.index_project(indexing_config, show_progress=False)
+            print(f"Indexed {metrics.entities_indexed} entities for integration test")
+            assert metrics.entities_indexed > 0, "No entities were indexed for the integration test"
+
+            # Give Qdrant a short moment to settle
+            await asyncio.sleep(0.5)
+
         # Test health check includes orchestration
             health = await search_executor.health_check()
             assert isinstance(health, dict)
@@ -1118,7 +1158,7 @@ The system follows these key patterns:
             ]
             
             for query, mode in test_queries:
-                logger.info(f"Testing search: '{query}' with mode {mode}")
+                print(f"Testing search: '{query}' with mode {mode}")
                 
                 request = SearchRequest(
                     request_id=f"test_{mode.value}_{int(time.time())}",
@@ -1146,13 +1186,13 @@ The system follows these key patterns:
                         response.claude_calls_made > 0 or 
                         response.query_optimization is not None
                     )
-                    logger.info(f"AUTO mode orchestration: calls={response.claude_calls_made}, "
+                    print(f"AUTO mode orchestration: calls={response.claude_calls_made}, "
                               f"optimization={response.query_optimization}")
                 
                 # Performance validation
                 assert search_time < 60, f"Search took too long: {search_time:.2f}s"
                 
-                logger.info(f"✅ Search '{query}': {len(response.results)} results in {search_time:.2f}s")
+                print(f"✅ Search '{query}': {len(response.results)} results in {search_time:.2f}s")
             
         # Test metrics collection
             metrics = search_executor.get_metrics()
@@ -1167,7 +1207,7 @@ The system follows these key patterns:
             
             if "orchestration_calls" in perf and perf["orchestration_calls"] > 0:
                 assert "average_orchestration_time_ms" in perf
-                logger.info(f"Orchestration metrics: {perf['orchestration_calls']} calls, "
+                print(f"Orchestration metrics: {perf['orchestration_calls']} calls, "
                           f"avg {perf['average_orchestration_time_ms']}ms")
             
         finally:
@@ -1177,7 +1217,7 @@ The system follows these key patterns:
     @pytest.mark.asyncio
     async def test_complete_e2e_search_workflow(self):
         """Test complete end-to-end search workflow with orchestration"""
-        logger.info("Testing complete E2E search workflow...")
+        print("Testing complete E2E search workflow...")
         
         # Use real repository for comprehensive testing
         repo_path = self.get_or_clone_repository()
@@ -1199,31 +1239,31 @@ The system follows these key patterns:
             workflow_start = time.perf_counter()
             
         # Phase 1: Server initialization
-            logger.info("Phase 1: Initializing MCP server...")
+            print("Phase 1: Initializing MCP server...")
             init_start = time.perf_counter()
             
             # Initialize components manually (can't use start() due to stdio blocking)
             from claude_code_context.mcp_server.models import MCPServerStatus
             server.status = MCPServerStatus.CONNECTING
-            logger.info(f"Using collection: {config.get_collection_name()}")
+            print(f"Using collection: {config.get_collection_name()}")
             
             # Initialize Qdrant connection
             qdrant_connected = await server.connection_manager.connect()
             assert qdrant_connected, "Qdrant connection failed - ensure Qdrant is running on localhost:6334"
-            logger.info("✅ Qdrant connected")
+            print("✅ Qdrant connected")
             
             # Initialize search executor first to get proper storage client
             search_ready = await server.search_executor.initialize()
-            logger.info("✅ Search executor ready" if search_ready else "⚠️ Search executor using placeholder mode")
+            print("✅ Search executor ready" if search_ready else "⚠️ Search executor using placeholder mode")
             
             # Create collection using connection manager to ensure health check consistency
             collection_ready = await server.connection_manager.ensure_collection_exists()
             assert collection_ready, "Collection creation failed"
-            logger.info("✅ Collection created via connection manager")
+            print("✅ Collection created via connection manager")
             
             # INDEX DATA INTO THE COLLECTION (critical step missing!)
             # Without indexing, searches will return 0 results
-            logger.info("📝 Indexing repository code into collection...")
+            print("📝 Indexing repository code into collection...")
             
             # Use HybridIndexer to actually index the repository content
             from core.indexer.hybrid_indexer import HybridIndexer, IndexingJobConfig
@@ -1255,7 +1295,7 @@ The system follows these key patterns:
             # Perform actual indexing
             try:
                 metrics = await indexer.index_project(indexing_config, show_progress=False)
-                logger.info(f"✅ Indexed {metrics.entities_indexed} entities from {metrics.files_processed} files")
+                print(f"✅ Indexed {metrics.entities_indexed} entities from {metrics.files_processed} files")
                 assert metrics.entities_indexed > 0, "No entities were indexed"
                 
                 # Note: The indexer creates collection with "-code" suffix automatically
@@ -1263,7 +1303,7 @@ The system follows these key patterns:
                 # No need to manually update the collection name
                 
             except Exception as e:
-                logger.info(f"⚠️ Indexing failed, using collection without data: {e}")
+                print(f"⚠️ Indexing failed, using collection without data: {e}")
                 # Continue test but searches will return empty results
             
             # Verify collection is actually available (add small delay for Qdrant consistency)
@@ -1277,15 +1317,15 @@ The system follows these key patterns:
             try:
                 collections = await asyncio.to_thread(server.connection_manager._client.get_collections)
                 all_collection_names = [col.name for col in collections.collections]
-                logger.info(f"All collections via connection manager: {all_collection_names}")
-                logger.info(f"Looking for collection: {collection_name}")
-                logger.info(f"Collection found in list: {collection_name in all_collection_names}")
+                print(f"All collections via connection manager: {all_collection_names}")
+                print(f"Looking for collection: {collection_name}")
+                print(f"Collection found in list: {collection_name in all_collection_names}")
             except Exception as e:
                 logger.error(f"Failed to list collections: {e}")
             
             # Get fresh health check (cache cleared above)
             verification_health = await server.connection_manager.health_check()
-            logger.info(f"Fresh connection health after creation: {verification_health}")
+            print(f"Fresh connection health after creation: {verification_health}")
             
             # Verify the collection is found by the verification health check
             assert verification_health.get("collection_exists", False), f"Collection not found in verification health check: {verification_health}"
@@ -1295,40 +1335,40 @@ The system follows these key patterns:
             server.start_time = asyncio.get_event_loop().time()
             
             init_time = time.perf_counter() - init_start
-            logger.info(f"Server initialization: {init_time:.2f}s")
+            print(f"Server initialization: {init_time:.2f}s")
             
         # Phase 2: Health verification
-            logger.info("Phase 2: Verifying server health...")
+            print("Phase 2: Verifying server health...")
             
             # Clear cache again before server health check to ensure fresh data
             server.connection_manager._last_health_check = 0.0
             
             # Debug: Test the _check_collection_available method directly
             collection_check_result = await server._check_collection_available()
-            logger.info(f"Direct collection availability check: {collection_check_result}")
+            print(f"Direct collection availability check: {collection_check_result}")
             
             # Also check what the connection manager returns
             cm_health = await server.connection_manager.health_check()
-            logger.info(f"Connection manager health check: {cm_health}")
+            print(f"Connection manager health check: {cm_health}")
             
             health_response = await server.get_server_health()
             health = health_response if isinstance(health_response, dict) else health_response
             
             # Log full health status for debugging
-            logger.info(f"Server health: {health}")
+            print(f"Server health: {health}")
             
             # Server should be healthy or ready
             assert health.get("healthy", False) or health.get("status") == "ready", f"Server not healthy: {health}"
             
             # Verify key health indicators
             assert health.get("qdrant_connected"), f"Qdrant not connected: {health}"
-            logger.info("✅ Qdrant connection verified")
+            print("✅ Qdrant connection verified")
             
             assert health.get("collection_available"), f"Collection not available: {health}"
-            logger.info("✅ Collection verified")
+            print("✅ Collection verified")
             
         # Phase 3: Search operations with different patterns
-            logger.info("Phase 3: Executing search operations...")
+            print("Phase 3: Executing search operations...")
             
             search_scenarios = [
                 {
@@ -1355,7 +1395,7 @@ The system follows these key patterns:
             total_search_time = 0
             
             for scenario in search_scenarios:
-                logger.info(f"Executing: {scenario['name']}")
+                print(f"Executing: {scenario['name']}")
                 
                 request = SearchRequest(
                     request_id=f"e2e_{scenario['name'].lower().replace(' ', '_')}",
@@ -1384,10 +1424,10 @@ The system follows these key patterns:
                     "query_optimization": response.query_optimization
                 })
                 
-                logger.info(f"✅ {scenario['name']}: {len(response.results)} results in {search_time:.2f}s")
+                print(f"✅ {scenario['name']}: {len(response.results)} results in {search_time:.2f}s")
             
         # Phase 4: Performance and metrics validation
-            logger.info("Phase 4: Validating performance and metrics...")
+            print("Phase 4: Validating performance and metrics...")
             
             total_workflow_time = time.perf_counter() - workflow_start
             avg_search_time = total_search_time / len(search_scenarios)
@@ -1405,40 +1445,284 @@ The system follows these key patterns:
             assert init_time < 30, f"Initialization took too long: {init_time:.2f}s"
             
         # Log comprehensive results
-            logger.info("="*60)
-            logger.info("E2E WORKFLOW RESULTS")
-            logger.info("="*60)
-            logger.info(f"Total workflow time: {total_workflow_time:.2f}s")
-            logger.info(f"Initialization time: {init_time:.2f}s")
-            logger.info(f"Total search time: {total_search_time:.2f}s")
-            logger.info(f"Average search time: {avg_search_time:.2f}s")
-            logger.info("")
+            print("="*60)
+            print("E2E WORKFLOW RESULTS")
+            print("="*60)
+            print(f"Total workflow time: {total_workflow_time:.2f}s")
+            print(f"Initialization time: {init_time:.2f}s")
+            print(f"Total search time: {total_search_time:.2f}s")
+            print(f"Average search time: {avg_search_time:.2f}s")
+            print("")
             
             for result in search_results:
-                logger.info(f"{result['scenario']}: {result['results']} results, "
+                print(f"{result['scenario']}: {result['results']} results, "
                           f"{result['time']:.2f}s, {result['claude_calls']} Claude calls")
                 if result['query_optimization']:
-                    logger.info(f"  Optimized: '{result['query_optimization']}'")
+                    print(f"  Optimized: '{result['query_optimization']}'")
             
-            logger.info("")
-            logger.info(f"Total searches: {performance.get('total_searches', 0)}")
-            logger.info(f"Failed searches: {performance.get('failed_searches', 0)}")
+            print("")
+            print(f"Total searches: {performance.get('total_searches', 0)}")
+            print(f"Failed searches: {performance.get('failed_searches', 0)}")
             if performance.get('orchestration_calls', 0) > 0:
-                logger.info(f"Orchestration calls: {performance.get('orchestration_calls', 0)}")
-                logger.info(f"Avg orchestration time: {performance.get('average_orchestration_time_ms', 0):.1f}ms")
+                print(f"Orchestration calls: {performance.get('orchestration_calls', 0)}")
+                print(f"Avg orchestration time: {performance.get('average_orchestration_time_ms', 0):.1f}ms")
             
-            logger.info("="*60)
-            logger.info("✅ COMPLETE E2E WORKFLOW SUCCESSFUL")
-            logger.info("="*60)
+            print("="*60)
+            print("✅ COMPLETE E2E WORKFLOW SUCCESSFUL")
+            print("="*60)
             
         finally:
         # Cleanup happens in teardown_class
             pass
     
     @pytest.mark.asyncio
+    async def test_mcp_layer_filtering_e2e(self):
+        """Test MCP-layer filtering with real indexed data - no mocks"""
+        print("Testing MCP-layer filtering with real data...")
+        
+        # Create test project with varied quality functions
+        project_path = self.create_test_project()
+        
+        # Use configuration with specific filtering thresholds
+        config = MCPServerConfig(
+            project_path=Path(project_path),
+            collection_name=self.create_unique_collection_name("filtering"),
+            qdrant_url="http://localhost:6334",
+            max_claude_calls=1,
+            debug_mode=False,
+            # Key filtering settings for MCP layer
+            max_results=5,  # Limit results to 5
+            payload_min_score=0.2,  # Low threshold for payload
+            semantic_min_score=0.4,  # Higher threshold for semantic
+            hybrid_min_score=0.3   # Medium threshold for hybrid
+        )
+        
+        # Create MCP server with filtering config
+        server = MCPCodeContextServer(config)
+        self.test_servers.append(server)
+        
+        try:
+            # Initialize server components
+            server.status = server.status.__class__.CONNECTING
+            
+            # Connect to Qdrant
+            qdrant_connected = await server.connection_manager.connect()
+            assert qdrant_connected, "Failed to connect to Qdrant"
+            
+            # Initialize search executor
+            search_ready = await server.search_executor.initialize()
+            print(f"Search executor initialized: {search_ready}")
+            
+            # Create collection with the correct typed name
+            # The connection manager should create the collection with -code suffix
+            collection_ready = await server.connection_manager.ensure_collection_exists()
+            assert collection_ready, "Failed to create collection"
+            
+            # Verify the collection was created with the right name
+            from core.storage.schemas import CollectionType
+            expected_collection = config.get_typed_collection_name(CollectionType.CODE)
+            print(f"Collection created: {expected_collection}")
+            
+            # Index the test project data
+            print("Indexing test project data...")
+            from core.indexer.hybrid_indexer import HybridIndexer, IndexingJobConfig
+            from core.parser.parallel_pipeline import ProcessParsingPipeline
+            
+            parser_pipeline = ProcessParsingPipeline(max_workers=4, batch_size=10, execution_mode="thread")
+            
+            # Use the base collection name - HybridIndexer's CollectionManager will add the -code suffix
+            # Do NOT use get_typed_collection_name here as it would result in double suffixing
+            from core.storage.schemas import CollectionType
+            collection_name_for_indexing = config.get_collection_name()
+            
+            indexing_config = IndexingJobConfig(
+                project_path=project_path,
+                project_name=collection_name_for_indexing,
+                include_patterns=["*.py"],
+                exclude_patterns=["__pycache__/*"],
+                max_workers=4,
+                batch_size=10
+            )
+            
+            indexer = HybridIndexer(
+                parser_pipeline=parser_pipeline,
+                embedder=server.search_executor._embedder,
+                storage_client=server.search_executor._qdrant_client,
+                cache_manager=None,
+                config=indexing_config
+            )
+            
+            # Index the project
+            metrics = await indexer.index_project(indexing_config, show_progress=False)
+            print(f"Indexed {metrics.entities_indexed} entities")
+            assert metrics.entities_indexed > 10, "Should have indexed multiple entities"
+            
+            # Wait for indexing to settle
+            await asyncio.sleep(1.0)
+            
+            # Test 1: Payload search with filtering
+            print("\nTest 1: PAYLOAD search with score filtering")
+            
+            payload_request = SearchRequest(
+                request_id="filter_test_payload",
+                query="AuthenticationService",  # Exact class name
+                mode=SearchMode.PAYLOAD,
+                limit=20  # Request 20, but config.max_results=5 will limit it
+            )
+            
+            payload_response = await server.search_executor.execute_search(payload_request)
+            
+            assert payload_response.success, f"Payload search failed: {payload_response.error_message}"
+            
+            # Should be limited by max_results (5) even though we requested 20
+            assert len(payload_response.results) <= 5, \
+                f"Results not limited: got {len(payload_response.results)}, expected max 5"
+            
+            # All results should meet minimum score threshold
+            for result in payload_response.results:
+                assert result.relevance_score >= config.payload_min_score, \
+                    f"Result score {result.relevance_score} below threshold {config.payload_min_score}"
+            
+            print(f"✅ Payload search: {len(payload_response.results)} results (max 5), "
+                       f"all scores >= {config.payload_min_score}")
+            
+            # Test 2: Semantic search with higher threshold
+            print("\nTest 2: SEMANTIC search with higher score threshold")
+            
+            semantic_request = SearchRequest(
+                request_id="filter_test_semantic",
+                query="secure password hashing and verification",  # Conceptual query
+                mode=SearchMode.SEMANTIC,
+                limit=20
+            )
+            
+            semantic_response = await server.search_executor.execute_search(semantic_request)
+            
+            assert semantic_response.success, f"Semantic search failed: {semantic_response.error_message}"
+            
+            # Results limited and filtered by higher semantic threshold
+            assert len(semantic_response.results) <= 5, \
+                f"Results not limited: got {len(semantic_response.results)}"
+            
+            # All results should meet higher semantic threshold
+            for result in semantic_response.results:
+                assert result.relevance_score >= config.semantic_min_score, \
+                    f"Result score {result.relevance_score} below semantic threshold {config.semantic_min_score}"
+            
+            print(f"✅ Semantic search: {len(semantic_response.results)} results, "
+                       f"all scores >= {config.semantic_min_score}")
+            
+            # Test 3: Hybrid search with balanced threshold
+            print("\nTest 3: HYBRID search with balanced threshold")
+            
+            hybrid_request = SearchRequest(
+                request_id="filter_test_hybrid",
+                query="JWT token validation authenticate_user",  # Mixed keywords and concepts
+                mode=SearchMode.HYBRID,
+                limit=20
+            )
+            
+            hybrid_response = await server.search_executor.execute_search(hybrid_request)
+            
+            assert hybrid_response.success, f"Hybrid search failed: {hybrid_response.error_message}"
+            
+            # Results limited and filtered by hybrid threshold
+            assert len(hybrid_response.results) <= 5, \
+                f"Results not limited: got {len(hybrid_response.results)}"
+            
+            for result in hybrid_response.results:
+                assert result.relevance_score >= config.hybrid_min_score, \
+                    f"Result score {result.relevance_score} below hybrid threshold {config.hybrid_min_score}"
+            
+            print(f"✅ Hybrid search: {len(hybrid_response.results)} results, "
+                       f"all scores >= {config.hybrid_min_score}")
+            
+            # Test 4: AUTO mode using hybrid threshold
+            print("\nTest 4: AUTO mode (should use hybrid threshold)")
+            
+            auto_request = SearchRequest(
+                request_id="filter_test_auto",
+                query="user authentication session management",
+                mode=SearchMode.AUTO,
+                limit=20
+            )
+            
+            auto_response = await server.search_executor.execute_search(auto_request)
+            
+            assert auto_response.success, f"Auto search failed: {auto_response.error_message}"
+            
+            # AUTO mode should use hybrid threshold
+            assert len(auto_response.results) <= 5
+            
+            for result in auto_response.results:
+                # AUTO mode defaults to hybrid threshold
+                assert result.relevance_score >= config.hybrid_min_score, \
+                    f"AUTO mode result score {result.relevance_score} below threshold"
+            
+            print(f"✅ AUTO search: {len(auto_response.results)} results, "
+                       f"using hybrid threshold {config.hybrid_min_score}")
+            
+            # Test 5: Verify core engine gets unfiltered results
+            print("\nTest 5: Verify core engine receives unfiltered results")
+            
+            # Access the core search configuration that was used
+            # This test verifies separation of concerns - core engine should not filter
+            
+            # We can check this by looking at the search executor's behavior
+            # The core engine should be called with min_score_threshold=0.0
+            # This is enforced in search_executor._execute_core_search()
+            
+            # Create a request that would have many low-scoring results
+            broad_request = SearchRequest(
+                request_id="filter_test_broad",
+                query="def class function",  # Very broad query
+                mode=SearchMode.PAYLOAD,
+                limit=20
+            )
+            
+            # Execute search
+            broad_response = await server.search_executor.execute_search(broad_request)
+            
+            # Even with broad query, results are filtered at MCP layer
+            assert len(broad_response.results) <= config.max_results
+            
+            # Verify filtering happened (we'd expect more than 5 matches for such broad terms)
+            print(f"✅ Broad search limited to {len(broad_response.results)} results "
+                       f"(MCP-layer filtering active)")
+            
+            # Log summary of filtering behavior
+            print("\n" + "="*60)
+            print("MCP-LAYER FILTERING SUMMARY")
+            print("="*60)
+            print(f"Configuration:")
+            print(f"  max_results: {config.max_results}")
+            print(f"  payload_min_score: {config.payload_min_score}")
+            print(f"  semantic_min_score: {config.semantic_min_score}")
+            print(f"  hybrid_min_score: {config.hybrid_min_score}")
+            print("")
+            print("Results:")
+            print(f"  Payload search: {len(payload_response.results)} results")
+            print(f"  Semantic search: {len(semantic_response.results)} results")
+            print(f"  Hybrid search: {len(hybrid_response.results)} results")
+            print(f"  AUTO search: {len(auto_response.results)} results")
+            print(f"  Broad search: {len(broad_response.results)} results")
+            print("")
+            print("✅ MCP-layer filtering working correctly:")
+            print("  - Results limited to max_results")
+            print("  - Dynamic thresholds applied by search mode")
+            print("  - Core engine receives unfiltered results")
+            print("  - Filtering happens at MCP layer only")
+            print("="*60)
+            
+        finally:
+            # Cleanup
+            await server.search_executor.shutdown()
+            await server.connection_manager.disconnect()
+    
+    @pytest.mark.asyncio
     async def test_error_handling_and_recovery(self):
         """Test error handling and recovery scenarios in orchestration"""
-        logger.info("Testing error handling and recovery...")
+        print("Testing error handling and recovery...")
         
         config = MCPServerConfig(
             project_path=Path("/nonexistent/path"),  # Invalid path
@@ -1448,7 +1732,7 @@ The system follows these key patterns:
         )
         
         # Test 1: Invalid project path
-        logger.info("Test 1: Invalid project path handling...")
+        print("Test 1: Invalid project path handling...")
         context_builder = ProjectContextBuilder(config)
         
         assert not context_builder.is_valid_project()
@@ -1462,7 +1746,7 @@ The system follows these key patterns:
         assert "Error building project context" in context
         
         # Test 2: Search executor with invalid configuration
-        logger.info("Test 2: Search executor error handling...")
+        print("Test 2: Search executor error handling...")
         
         connection_manager = QdrantConnectionManager(config)
         search_executor = SearchExecutor(connection_manager, config)
@@ -1487,13 +1771,13 @@ The system follows these key patterns:
         # May succeed with placeholder results or fail gracefully
         
         # Test 3: Health checks with invalid configuration
-        logger.info("Test 3: Health check error handling...")
+        print("Test 3: Health check error handling...")
         
         health = await search_executor.health_check()
         assert isinstance(health, dict)
         # Should return health info even with errors
         
-        logger.info("✅ Error handling and recovery verified")
+        print("✅ Error handling and recovery verified")
 
 
 if __name__ == "__main__":

@@ -84,7 +84,7 @@ class SearchExecutor:
         self._orchestration_calls = 0
         self._orchestration_time = 0.0
         
-        logger.info("Initialized SearchExecutor with Claude orchestration")
+        print("Initialized SearchExecutor with Claude orchestration")
     
     async def initialize(self) -> bool:
         """
@@ -143,7 +143,7 @@ class SearchExecutor:
                 # Build project context for Claude
                 if self._context_builder.is_valid_project():
                     self._project_context = await self._context_builder.build_project_context()
-                    logger.info("✅ Project context built for Claude orchestration")
+                    print("✅ Project context built for Claude orchestration")
                 else:
                     logger.warning("⚠️  Invalid project path for context building")
                     self._orchestration_enabled = False
@@ -153,11 +153,11 @@ class SearchExecutor:
                 self._orchestration_enabled = False
             
             self._initialized = True
-            logger.info("✅ Search infrastructure initialized successfully")
+            print("✅ Search infrastructure initialized successfully")
             if self._orchestration_enabled:
-                logger.info("✅ Claude orchestration enabled")
+                print("✅ Claude orchestration enabled")
             else:
-                logger.info("⚠️  Claude orchestration disabled - using direct search")
+                print("⚠️  Claude orchestration disabled - using direct search")
             return True
             
         except Exception as e:
@@ -190,7 +190,18 @@ class SearchExecutor:
             search_mode = request.mode
             optimized_query = request.query
             
-            if self._orchestration_enabled and self._orchestrator and request.mode == SearchMode.AUTO:
+            # TODO: Claude orchestration can over-optimize queries, causing 0 results
+            # Problem: Claude rewrites "authenticate_user validate_session" to a single phrase
+            #          and changes mode from AUTO to PAYLOAD, but payload search expects
+            #          exact/prefix/contains matches on the whole phrase, finding nothing.
+            # Solution: Execute BOTH searches in parallel:
+            #   1. Original query with original mode (fallback)
+            #   2. Claude-optimized query with Claude's suggested mode
+            # Then merge results, preferring Claude's if it has results, otherwise fallback.
+            # This ensures we never return 0 results when the original query would have worked.
+            
+            # TEMPORARILY DISABLED: Claude orchestration rewriting causes 0 results for multi-word queries
+            if False and self._orchestration_enabled and self._orchestrator and request.mode == SearchMode.AUTO:
                 try:
                     # Create orchestration context
                     context = OrchestrationContext(
@@ -210,7 +221,7 @@ class SearchExecutor:
                     search_mode = self._translate_strategy_to_mode(strategy.search_type)
                     optimized_query = strategy.query
                     
-                    logger.info(f"🧠 Claude strategy: {strategy.search_type} -> '{optimized_query}'")
+                    print(f"🧠 Claude strategy: {strategy.search_type} -> '{optimized_query}'")
                     logger.debug(f"Claude reasoning: {strategy.reasoning}")
                     
                 except Exception as e:
@@ -287,10 +298,12 @@ class SearchExecutor:
         core_mode = self._translate_search_mode(request.mode)
         
         # Create search configuration
+        # IMPORTANT: We get ALL results from core engine (min_score_threshold=0.0)
+        # Filtering happens at MCP layer to maintain separation of concerns
         search_config = SearchConfig(
             mode=core_mode,
-            limit=min(request.limit, 100),  # Cap at 100 results
-            min_score_threshold=request.min_score,
+            limit=100,  # Get max results from core, filter at MCP layer
+            min_score_threshold=0.0,  # No filtering at core engine level
             include_file_types=request.file_types or []
         )
         
@@ -343,10 +356,30 @@ class SearchExecutor:
         core_results: List[CoreSearchResult], 
         request: SearchRequest
     ) -> List[MCPSearchResult]:
-        """Convert core search results to MCP format"""
+        """
+        Convert core search results to MCP format with MCP-layer filtering.
+        
+        This implements the filtering at MCP layer as per architecture decision:
+        - Core engine returns all results (min_score_threshold=0.0)
+        - MCP layer applies dynamic thresholds based on search mode
+        - MCP layer limits results to configured max_results
+        """
+        # Get dynamic threshold based on search mode
+        min_score_threshold = self._get_min_score_for_mode(request.mode)
+        
         mcp_results = []
         
         for core_result in core_results:
+            # Apply MCP-layer relevance filtering
+            # NOTE: Core engine should already provide valid scores (0.0-1.0)
+            # If scores exceed 1.0, it's a bug in the core engine that should be fixed there
+            if core_result.score < min_score_threshold:
+                logger.debug(
+                    f"Filtering result with score {core_result.score:.3f} "
+                    f"(below threshold {min_score_threshold:.3f} for {request.mode.value} mode)"
+                )
+                continue
+            
             # Extract entity information from core result
             point = core_result.point
             payload = point.payload
@@ -369,8 +402,42 @@ class SearchExecutor:
             )
             
             mcp_results.append(mcp_result)
+            
+            # Apply result limit at MCP layer
+            if len(mcp_results) >= self.config.max_results:
+                print(
+                    f"Reached max_results limit ({self.config.max_results}), "
+                    f"truncating {len(core_results) - len(mcp_results)} additional results"
+                )
+                break
+        
+        print(
+            f"MCP filtering: {len(core_results)} core results -> "
+            f"{len(mcp_results)} MCP results (threshold={min_score_threshold:.3f})"
+        )
         
         return mcp_results
+    
+    def _get_min_score_for_mode(self, mode: SearchMode) -> float:
+        """
+        Get minimum score threshold for given search mode.
+        
+        Dynamic thresholds based on observed score distributions:
+        - Payload: 0.15 (scores typically 0.1-1.0+, filter out very weak matches)
+        - Semantic: 0.4 (scores typically 0.4-0.8, filter out weak semantic matches)
+        - Hybrid: 0.25 (when using weighted fusion). When using RRF fusion, core scales
+          fused scores into ~[0,1], so 0.25 remains acceptable, but can be lowered to 0.0
+          to disable filtering if desired.
+        - Auto: Uses hybrid threshold as default
+        """
+        if mode == SearchMode.PAYLOAD:
+            return self.config.payload_min_score
+        elif mode == SearchMode.SEMANTIC:
+            return self.config.semantic_min_score
+        elif mode == SearchMode.HYBRID:
+            return self.config.hybrid_min_score
+        else:  # AUTO or unknown
+            return self.config.hybrid_min_score
     
     def _get_match_type(self, search_type: str) -> str:
         """Get match type string from search type"""
@@ -552,7 +619,7 @@ class SearchExecutor:
         self._initialized = False
         self._orchestration_enabled = False
         
-        logger.info("Search executor shutdown complete")
+        print("Search executor shutdown complete")
     
     def get_metrics(self) -> Dict[str, Any]:
         """Get comprehensive search executor metrics"""

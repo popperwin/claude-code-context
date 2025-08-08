@@ -56,6 +56,22 @@ class MCPServerConfig(BaseModel):
     search_timeout_ms: int = Field(default=30000, ge=1000, le=120000)
     context_word_limit: int = Field(default=20000, ge=1000, le=50000)
     
+    # Result filtering settings (MCP layer, not core engine)
+    # These can be overridden via environment variables:
+    # MCP_MAX_RESULTS, MCP_PAYLOAD_MIN_SCORE, MCP_SEMANTIC_MIN_SCORE, MCP_HYBRID_MIN_SCORE
+    max_results: int = Field(default=10, ge=1, le=100, description="Maximum results to return to user")
+    payload_min_score: float = Field(default=0.15, ge=0.0, le=1.0, description="Min score for payload results")
+    semantic_min_score: float = Field(default=0.4, ge=0.0, le=1.0, description="Min score for semantic results")
+    hybrid_min_score: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Min score for hybrid results. When using RRF fusion in core, scores are scaled into ~[0,1]; "
+            "0.1 is a conservative default that avoids filtering good RRF results. Set to 0.0 to disable."
+        ),
+    )
+    
     @field_validator('qdrant_url')
     @classmethod
     def validate_qdrant_url(cls, v: str) -> str:
@@ -120,8 +136,8 @@ class SearchRequest(BaseModel):
     
     # Search parameters
     mode: SearchMode = Field(default=SearchMode.AUTO)
-    limit: int = Field(default=10, ge=1, le=100)
-    min_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    limit: int = Field(default=10, ge=1, le=100, description="Maximum results to return")
+    min_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Minimum relevance score")
     
     # Context and filtering
     include_code: bool = Field(default=True)
@@ -173,7 +189,7 @@ class SearchResult(BaseModel):
     end_byte: int = Field(..., ge=0)
     
     # Search relevance
-    relevance_score: float = Field(..., ge=0.0, le=1.0)
+    relevance_score: float = Field(..., ge=0.0)  # No upper limit - scores can exceed 1.0
     match_type: str = Field(..., min_length=1)  # "exact", "semantic", "hybrid"
     
     @field_validator('end_line')

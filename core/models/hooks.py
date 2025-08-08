@@ -339,7 +339,7 @@ class HookExecutionContext(BaseModel):
     
     # Search settings
     max_results_per_query: int = Field(default=5, ge=1, le=20)
-    min_relevance_score: float = Field(default=0.3, ge=0.0, le=1.0)
+    min_relevance_score: float = Field(default=0.3, ge=0.0)  # No upper limit - scores can exceed 1.0
     enable_hybrid_search: bool = True
     
     # Performance settings

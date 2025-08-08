@@ -465,9 +465,9 @@ class TestHybridQdrantClient:
                 
                 assert len(results) == 1
                 assert results[0].search_type == SearchMode.HYBRID
-                # Combined score should be weighted average
-                expected_score = 0.8 * 0.7 + 0.6 * 0.3
-                assert abs(results[0].score - expected_score) < 0.001
+                # Combined score now uses RRF with k=60 and is scaled to ~[0,1].
+                # When the same point is top-1 in both lists, fused score ≈ 1.0
+                assert abs(results[0].score - 1.0) < 1e-6
     
     @pytest.mark.asyncio
     async def test_get_collection_info(self):
