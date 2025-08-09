@@ -90,10 +90,11 @@ class ClaudeOrchestrator:
         self.max_claude_calls = config.max_claude_calls
         self.debug_mode = config.debug_mode
         
-        # Length constraints (reasonable limits to prevent abuse)
-        self.max_query_length = 1000  # For user queries
-        self.max_prompt_length = 10000  # For full prompts with context
-        self.max_context_length = 100000  # Increased for complex searches
+        # Token-aware length constraints from config (Claude 4 optimized)
+        self.max_query_length = config.max_user_query_chars      # ~1K tokens - user queries
+        self.max_prompt_length = config.max_prompt_chars         # ~10K tokens - full prompts  
+        self.max_context_length = config.max_context_chars       # ~150K tokens - conversation context
+        self.max_results_summary_length = config.max_results_summary_chars  # ~5K tokens - results per iteration
         self.timeout_seconds = 30
         
         # Note: We don't need pattern-based sanitization because:
@@ -360,10 +361,9 @@ class ClaudeOrchestrator:
             )
         
         try:
-            # Truncate results summary if too long to avoid prompt size issues
-            max_summary_length = 3000  # Keep reasonable size for Claude
-            if len(prior_results_summary) > max_summary_length:
-                prior_results_summary = prior_results_summary[:max_summary_length] + "\n... (truncated)"
+            # Truncate results summary using configured limit (token-aware)
+            if len(prior_results_summary) > self.max_results_summary_length:
+                prior_results_summary = prior_results_summary[:self.max_results_summary_length] + "\n... (truncated)"
             
             # For resumed sessions, Claude already has context, so keep prompt minimal
             is_resumed_session = (session_id and 

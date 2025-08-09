@@ -48,6 +48,13 @@ class MCPServerConfig(BaseModel):
     max_claude_calls: int = Field(default=10, ge=1, le=50)
     debug_mode: bool = Field(default=False)
     
+    # Context management (token-aware limits for Claude 4 - 200K token context)
+    # Reserve ~50K tokens for Claude responses, use ~150K for input
+    max_user_query_chars: int = Field(default=4000, ge=100, le=10000)      # ~1K tokens - user queries
+    max_prompt_chars: int = Field(default=40000, ge=1000, le=100000)       # ~10K tokens - full prompts
+    max_context_chars: int = Field(default=600000, ge=10000, le=2000000)   # ~150K tokens - conversation context
+    max_results_summary_chars: int = Field(default=20000, ge=1000, le=50000) # ~5K tokens - results per iteration
+    
     # Qdrant connection
     qdrant_url: str = Field(default="http://localhost:6333")
     qdrant_timeout: float = Field(default=60.0, ge=1.0, le=300.0)
