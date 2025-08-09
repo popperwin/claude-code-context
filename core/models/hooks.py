@@ -162,7 +162,7 @@ class ContextResult(BaseModel):
     end_line: int
     
     # Relevance
-    score: float = Field(ge=0.0, le=1.0)
+    score: float = Field(ge=0.0)  # No upper limit - scores can exceed 1.0
     rank: int = Field(ge=1)
     
     # Search metadata

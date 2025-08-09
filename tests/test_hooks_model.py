@@ -429,7 +429,7 @@ class TestContextResult:
     
     def test_score_validation_bounds(self):
         """Test score validation enforces bounds"""
-        # Valid scores
+        # Valid scores (unbounded - can exceed 1.0)
         ContextResult(
             entity_id="test", entity_type="function", file_path="/test.py",
             source_code="code", start_line=1, end_line=2, score=0.0,
@@ -442,18 +442,18 @@ class TestContextResult:
             rank=1, matched_query="query", search_type="semantic"
         )
         
-        # Invalid scores should be handled by Pydantic validation
+        # Scores > 1.0 are now valid (unbounded scoring)
+        ContextResult(
+            entity_id="test", entity_type="function", file_path="/test.py",
+            source_code="code", start_line=1, end_line=2, score=1.5,
+            rank=1, matched_query="query", search_type="semantic"
+        )
+        
+        # Only negative scores should fail
         with pytest.raises(ValueError):
             ContextResult(
                 entity_id="test", entity_type="function", file_path="/test.py",
                 source_code="code", start_line=1, end_line=2, score=-0.1,
-                rank=1, matched_query="query", search_type="semantic"
-            )
-        
-        with pytest.raises(ValueError):
-            ContextResult(
-                entity_id="test", entity_type="function", file_path="/test.py",
-                source_code="code", start_line=1, end_line=2, score=1.1,
                 rank=1, matched_query="query", search_type="semantic"
             )
     

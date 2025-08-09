@@ -44,6 +44,20 @@ class ClaudeStrategyResponse(BaseModel):
         use_enum_values = True
 
 
+class ClaudeFollowupResponse(BaseModel):
+    """Response schema for iterative followup analysis"""
+    sufficient: bool = Field(..., description="Whether current results are sufficient")
+    followups: List[Dict[str, Any]] = Field(
+        default_factory=list, 
+        max_items=3,
+        description="List of followup search strategies if results insufficient"
+    )
+    reasoning: str = Field(default="", max_length=500, description="Brief explanation of decision")
+    
+    class Config:
+        use_enum_values = True
+
+
 @dataclass
 class OrchestrationContext:
     """Context for Claude orchestration calls"""
@@ -54,6 +68,7 @@ class OrchestrationContext:
     previous_results: List[Dict[str, Any]] = field(default_factory=list)
     search_history: List[str] = field(default_factory=list)
     project_context: Optional[str] = None
+    session_id: Optional[str] = None  # Claude CLI session ID for continuity
 
 
 class SecurityError(Exception):
@@ -75,21 +90,17 @@ class ClaudeOrchestrator:
         self.max_claude_calls = config.max_claude_calls
         self.debug_mode = config.debug_mode
         
-        # Security constraints
-        self.max_query_length = 1000
-        self.max_context_length = 20000  # 20k words limit from Sprint 8
+        # Length constraints (reasonable limits to prevent abuse)
+        self.max_query_length = 1000  # For user queries
+        self.max_prompt_length = 10000  # For full prompts with context
+        self.max_context_length = 100000  # Increased for complex searches
         self.timeout_seconds = 30
         
-        # Input sanitization patterns
-        self.dangerous_patterns = [
-            r'[;&|`$]',  # Shell metacharacters
-            r'\.\./',    # Path traversal
-            r'<script',  # HTML injection
-            r'exec\(',   # Code execution
-            r'eval\(',   # Code evaluation
-            r'import\s+os',  # OS imports
-            r'subprocess',   # Subprocess calls
-        ]
+        # Note: We don't need pattern-based sanitization because:
+        # 1. We're passing text to Claude CLI via stdin (not shell execution)
+        # 2. Claude CLI handles its own input validation
+        # 3. We're using subprocess.PIPE which doesn't invoke shell
+        # 4. Blocking patterns like $ or ; breaks legitimate JSON prompts
         
         logger.info(f"ClaudeOrchestrator initialized with CLI at: {self.claude_cli_path}")
     
@@ -107,36 +118,36 @@ class ClaudeOrchestrator:
             logger.error(f"Error finding Claude CLI: {e}")
             return None
     
-    def _sanitize_input(self, text: str) -> str:
+    def _sanitize_input(self, text: str, is_full_prompt: bool = False) -> str:
         """
-        Sanitize input text to prevent injection attacks.
+        Basic input sanitization - just check length and clean control characters.
+        
+        We're not executing shell commands, just passing text to Claude CLI via stdin,
+        so we don't need aggressive pattern blocking.
         
         Args:
             text: Input text to sanitize
+            is_full_prompt: If True, uses max_prompt_length instead of max_query_length
             
         Returns:
             Sanitized text
             
         Raises:
-            SecurityError: If dangerous patterns are detected
+            SecurityError: If input is invalid
         """
         if not isinstance(text, str):
             raise SecurityError("Input must be a string")
         
-        # Check length limits
-        if len(text) > self.max_query_length:
-            raise SecurityError(f"Input too long: {len(text)} > {self.max_query_length}")
+        # Check length limits (use appropriate limit based on context)
+        max_length = self.max_prompt_length if is_full_prompt else self.max_query_length
+        if len(text) > max_length:
+            # Just truncate instead of failing - more user-friendly
+            logger.warning(f"Input truncated from {len(text)} to {max_length} characters")
+            text = text[:max_length]
         
-        # Check for dangerous patterns
-        for pattern in self.dangerous_patterns:
-            if re.search(pattern, text, re.IGNORECASE):
-                raise SecurityError(f"Dangerous pattern detected: {pattern}")
-        
-        # Remove control characters except whitespace
+        # Only remove actual control characters (not punctuation or symbols)
+        # Keep newlines and tabs for formatting
         sanitized = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
-        
-        # Normalize whitespace
-        sanitized = ' '.join(sanitized.split())
         
         return sanitized
     
@@ -150,8 +161,8 @@ class ClaudeOrchestrator:
         Returns:
             Sanitized prompt string
         """
-        # Sanitize all inputs
-        query = self._sanitize_input(context.query)
+        # Sanitize user query (strict limit)
+        query = self._sanitize_input(context.query, is_full_prompt=False)
         
         # Build prompt components
         prompt_parts = [
@@ -187,18 +198,19 @@ class ClaudeOrchestrator:
         
         prompt = "\n".join(prompt_parts)
         
-        # Final length check
+        # Final length check (this prompt is already sanitized per-component)
         if len(prompt) > self.max_context_length:
             raise SecurityError(f"Prompt too long: {len(prompt)} > {self.max_context_length}")
         
         return prompt
     
-    async def _execute_claude_cli(self, prompt: str) -> Dict[str, Any]:
+    async def _execute_claude_cli(self, prompt: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Execute Claude CLI securely with proper subprocess handling.
         
         Args:
             prompt: Sanitized prompt to send to Claude
+            session_id: Optional session ID for conversation continuity
             
         Returns:
             Parsed JSON response from Claude
@@ -217,6 +229,23 @@ class ClaudeOrchestrator:
             # Note: --json not supported by all Claude CLI versions
             "--print",     # Use print mode for non-interactive output
         ]
+        
+        # Session continuity: First call uses --session-id, subsequent calls use --resume
+        if session_id:
+            # Track sessions to know if this is first call or subsequent
+            if not hasattr(self, '_session_call_counts'):
+                self._session_call_counts = {}
+            
+            if session_id not in self._session_call_counts:
+                # First call with this session - create new session
+                cmd_args.extend(["--session-id", session_id])
+                self._session_call_counts[session_id] = 1
+                logger.debug(f"Creating new session: {session_id}")
+            else:
+                # Subsequent call - resume existing session
+                cmd_args.extend(["--resume", session_id])
+                self._session_call_counts[session_id] += 1
+                logger.debug(f"Resuming session: {session_id} (call #{self._session_call_counts[session_id]})")
         
         # Set secure environment
         env = os.environ.copy()
@@ -305,6 +334,89 @@ class ClaudeOrchestrator:
             logger.error(f"Claude response security check failed: {e}")
             raise
     
+    async def analyze_followup(
+        self, 
+        original_query: str,
+        prior_results_summary: str,
+        session_id: Optional[str] = None
+    ) -> ClaudeFollowupResponse:
+        """
+        Analyze whether current results are sufficient and suggest followup searches.
+        
+        Args:
+            original_query: The original user query
+            prior_results_summary: Summary of results found so far
+            session_id: Claude CLI session ID for conversation continuity
+            
+        Returns:
+            Validated followup response with sufficient flag and suggestions
+        """
+        if not self.claude_cli_path:
+            # Simple fallback - always sufficient if no Claude
+            return ClaudeFollowupResponse(
+                sufficient=True,
+                followups=[],
+                reasoning="Claude unavailable, assuming results sufficient"
+            )
+        
+        try:
+            # Truncate results summary if too long to avoid prompt size issues
+            max_summary_length = 3000  # Keep reasonable size for Claude
+            if len(prior_results_summary) > max_summary_length:
+                prior_results_summary = prior_results_summary[:max_summary_length] + "\n... (truncated)"
+            
+            # For resumed sessions, Claude already has context, so keep prompt minimal
+            is_resumed_session = (session_id and 
+                                  hasattr(self, '_session_call_counts') and 
+                                  session_id in self._session_call_counts)
+            
+            if is_resumed_session:
+                # Minimal prompt - Claude already knows the context
+                prompt = f"""Here are the updated search results:
+{prior_results_summary}
+
+Are these results now sufficient? Respond with JSON as before."""
+            else:
+                # Full prompt for first call
+                prompt = f"""Analyze search results for: "{original_query}"
+
+Results summary (top results):
+{prior_results_summary}
+
+Respond with JSON ONLY:
+{{
+  "sufficient": true or false (are the results adequate for the user's query?),
+  "followups": [
+    {{"search_type": "payload|semantic|hybrid", "query": "refined query", "reasoning": "why this helps"}},
+    ...max 3 items
+  ],
+  "reasoning": "brief explanation of your decision"
+}}
+
+Consider:
+- Do results fully address the query?
+- Are there missing aspects to explore?
+- Would different search modes help?
+IMPORTANT: Keep queries concise and focused."""
+            
+            # Sanitize prompt (use full prompt flag since this includes results summary)
+            prompt = self._sanitize_input(prompt, is_full_prompt=True)
+            
+            # Execute with session continuity
+            response_data = await self._execute_claude_cli(prompt, session_id=session_id)
+            
+            # Validate and return
+            return ClaudeFollowupResponse(**response_data)
+            
+        except Exception as e:
+            logger.warning(f"Followup analysis failed: {e}")
+            # Conservative fallback - assume sufficient to avoid infinite loops
+            return ClaudeFollowupResponse(
+                sufficient=True,
+                followups=[],
+                reasoning="Analysis failed, assuming results sufficient"
+            )
+    
     async def analyze_query(self, context: OrchestrationContext) -> ClaudeStrategyResponse:
         """
         Analyze search query and get optimized strategy from Claude.
@@ -329,9 +441,9 @@ class ClaudeOrchestrator:
             # Build and sanitize prompt
             prompt = self._build_prompt(context)
             
-            # Execute Claude CLI
+            # Execute Claude CLI with session continuity
             start_time = time.perf_counter()
-            response_data = await self._execute_claude_cli(prompt)
+            response_data = await self._execute_claude_cli(prompt, session_id=context.session_id)
             execution_time = time.perf_counter() - start_time
             
             # Validate response
@@ -420,6 +532,12 @@ class ClaudeOrchestrator:
     def is_available(self) -> bool:
         """Check if Claude CLI orchestration is available"""
         return self.claude_cli_path is not None
+    
+    def cleanup_session(self, session_id: str) -> None:
+        """Clean up session tracking after request completes"""
+        if hasattr(self, '_session_call_counts') and session_id in self._session_call_counts:
+            del self._session_call_counts[session_id]
+            logger.debug(f"Cleaned up session: {session_id}")
     
     async def health_check(self) -> Dict[str, Any]:
         """

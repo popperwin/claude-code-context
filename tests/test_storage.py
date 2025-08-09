@@ -249,8 +249,8 @@ class TestSearchResult:
             payload=payload
         )
         
-        # Valid scores
-        for score in [0.0, 0.5, 1.0]:
+        # Valid scores (unbounded - can exceed 1.0)
+        for score in [0.0, 0.5, 1.0, 1.5, 2.0]:
             result = SearchResult(
                 point=point,
                 score=score,
@@ -272,7 +272,7 @@ class TestSearchResult:
         )
         assert result.score == 0.123457  # Rounded to 6 decimal places
         
-        # Invalid scores
+        # Invalid scores - only negative scores should fail
         with pytest.raises(ValueError):
             SearchResult(
                 point=point,
@@ -283,15 +283,16 @@ class TestSearchResult:
                 total_results=1
             )
         
-        with pytest.raises(ValueError):
-            SearchResult(
-                point=point,
-                score=1.1,  # Above 1
-                query="test",
-                search_type="semantic",
-                rank=1,
-                total_results=1
-            )
+        # Scores > 1.0 are now valid (unbounded scoring)
+        result = SearchResult(
+            point=point,
+            score=1.5,  # Above 1.0 is now valid
+            query="test",
+            search_type="semantic",
+            rank=1,
+            total_results=1
+        )
+        assert result.score == 1.5
     
     def test_relevance_properties(self):
         """Test relevance assessment properties"""

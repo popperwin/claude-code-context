@@ -85,6 +85,7 @@ class TestSearchExecutor:
             
             with patch('claude_code_context.mcp_server.search_executor.HybridQdrantClient') as mock_client_class:
                 mock_client = Mock()
+                mock_client.connect = AsyncMock(return_value=True)  # Add async connect method
                 mock_client_class.return_value = mock_client
                 
                 with patch('claude_code_context.mcp_server.search_executor.HybridSearcher') as mock_searcher_class:

@@ -458,9 +458,6 @@ class HybridQdrantClient:
                 # Calculate relevance score based on text matching
                 score = self._calculate_payload_score(query, point.payload)
                 
-                print(f"[DEBUG] Creating SearchResult with score={score} for entity={point.payload.get('entity_name', 'unknown')}")
-                if score > 1.0:
-                    print(f"[WARNING] Score {score} exceeds 1.0! This will fail validation.")
                 
                 result = SearchResult(
                     point=qdrant_point,
@@ -553,8 +550,6 @@ class HybridQdrantClient:
                 # Ensure semantic scores from Qdrant are normalized to 0-1 range
                 # Qdrant cosine similarity can sometimes exceed 1.0 due to numerical precision
                 normalized_score = min(scored_point.score, 1.0)
-                if scored_point.score > 1.0:
-                    print(f"[DEBUG] Capping semantic score {scored_point.score} to 1.0")
                 
                 result = SearchResult(
                     point=qdrant_point,
@@ -749,7 +744,6 @@ class HybridQdrantClient:
         query_lower = query.lower().strip()
         score = 0.0
         
-        print(f"\n[DEBUG] _calculate_payload_score for query: '{query_lower}'")
         
         # Field importance weights for three-tier approach
         field_weights = {
@@ -790,15 +784,12 @@ class HybridQdrantClient:
             if field_value_lower == query_lower:
                 # Tier 1: Exact match - highest priority  
                 match_score = field_weight * match_type_scores["exact"]
-                print(f"  [DEBUG] Field '{field}' = '{field_value_lower}' EXACT match: {match_score}")
             elif field_value_lower.startswith(query_lower):
                 # Tier 2: Prefix match - high priority
                 match_score = field_weight * match_type_scores["prefix"]
-                print(f"  [DEBUG] Field '{field}' = '{field_value_lower}' PREFIX match: {match_score}")
             elif query_lower in field_value_lower:
                 # Tier 3: Contains match - lower priority (for content fields)
                 match_score = field_weight * match_type_scores["contains"]
-                print(f"  [DEBUG] Field '{field}' = '{field_value_lower}' CONTAINS match: {match_score}")
             
             score += match_score
         
@@ -807,15 +798,12 @@ class HybridQdrantClient:
         if entity_type in entity_type_bonus:
             bonus = entity_type_bonus[entity_type]
             score += bonus
-            print(f"  [DEBUG] Entity type '{entity_type}' bonus: {bonus}")
         
-        print(f"  [DEBUG] RAW SCORE before adjustment: {score}")
         
         # Return raw score without normalization
         # Scores represent match quality and can naturally vary based on the scoring formula
         # No artificial ceiling - let multiplicative boosts in ranking push scores above 1.0 if warranted
         if score <= 0:
-            print(f"  [DEBUG] Score <= 0, returning 0.0")
             return 0.0
 
         # Optional: Apply gentle gamma adjustment for score distribution
@@ -823,7 +811,6 @@ class HybridQdrantClient:
         gamma = 0.85
         adjusted = score ** gamma
         
-        print(f"  [DEBUG] FINAL SCORE after gamma({gamma}): {adjusted} (raw={score})")
         return adjusted
     
     def _combine_search_results(
@@ -835,9 +822,6 @@ class HybridQdrantClient:
         semantic_weight: float
     ) -> List[SearchResult]:
         """Combine and rank payload and semantic search results"""
-        print(f"\n[DEBUG] _combine_search_results called")
-        print(f"  payload_weight={payload_weight}, semantic_weight={semantic_weight}")
-        print(f"  weights sum={payload_weight + semantic_weight}")
         
         # Create lookup for semantic scores
         semantic_scores = {result.point.id: result.score for result in semantic_results}
@@ -923,7 +907,6 @@ class HybridQdrantClient:
         RRF is robust to score scale differences by operating on ranks. The constant k
         controls the contribution decay by rank; k=60 is a common default in industry.
         """
-        print(f"\n[DEBUG] _combine_search_results_rrf called (k={k})")
 
         # Sort the two result lists by their native scores (descending)
         payload_sorted = sorted(payload_results, key=lambda r: r.score, reverse=True)

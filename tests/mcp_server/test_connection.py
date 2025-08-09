@@ -265,7 +265,7 @@ class TestQdrantConnectionManager:
         mock_col_1 = Mock()
         mock_col_1.name = "other_collection"
         mock_col_2 = Mock()
-        mock_col_2.name = "test_collection"  # Our collection exists
+        mock_col_2.name = "test_collection-code"  # Our collection exists with -code suffix
         mock_col_3 = Mock()
         mock_col_3.name = "another_collection"
         
@@ -285,7 +285,7 @@ class TestQdrantConnectionManager:
             assert health["total_collections"] == 3
             assert "response_time_ms" in health
             assert health["qdrant_url"] == connection_manager.config.qdrant_url
-            assert health["collection_name"] == "test_collection"
+            assert health["collection_name"] == "test_collection-code"  # Collection has -code suffix
     
     @pytest.mark.asyncio
     async def test_health_check_unhealthy(self, connection_manager):
@@ -350,7 +350,7 @@ class TestQdrantConnectionManager:
         mock_collections = Mock()
         # Create proper mock collection with name attribute
         mock_col = Mock()
-        mock_col.name = "test_collection"
+        mock_col.name = "test_collection-code"  # Collection name includes -code suffix
         mock_collections.collections = [mock_col]
         
         # Set up the connection manager with a mock client
@@ -500,7 +500,7 @@ class TestQdrantConnectionManager:
         cm_info = metrics["connection_manager"]
         assert cm_info["connected"] is True
         assert cm_info["qdrant_url"] == connection_manager.config.qdrant_url
-        assert cm_info["collection_name"] == "test_collection"
+        assert cm_info["collection_name"] == "test_collection-code"  # Collection has -code suffix
         
         # Check performance stats
         perf_stats = metrics["performance"]

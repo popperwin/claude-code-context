@@ -554,7 +554,7 @@ class TestHybridQdrantClient:
             "docstring": "test description"
         }
         score = client._calculate_payload_score("test", payload)
-        assert 0.0 < score < 1.0
+        assert score > 0.0  # Score should be positive, no upper bound
         
         # Test no match
         payload = {

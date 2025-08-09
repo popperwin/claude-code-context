@@ -327,20 +327,56 @@ class TestIndexCommand:
         self.runner = CliRunner()
     
     def test_index_basic(self):
-        """Test basic index command"""
+        """Test basic index command without project initialization"""
         result = self.runner.invoke(index)
         
         assert result.exit_code == 0
-        assert "Manual indexing not yet implemented" in result.output
-        assert "FEAT11" in result.output
+        assert "Project not initialized" in result.output
+        assert "'ccc init'" in result.output  # More flexible check for the command
     
     def test_index_full_flag(self):
-        """Test index command with --full flag"""
+        """Test index command with --full flag without project initialization"""
         result = self.runner.invoke(index, ['--full'])
         
         assert result.exit_code == 0
-        assert "Manual indexing not yet implemented" in result.output
-        assert "Full reindexing requested" in result.output
+        assert "Project not initialized" in result.output
+        assert "'ccc init'" in result.output  # More flexible check for the command
+    
+    def test_index_dry_run(self):
+        """Test index command with --dry-run flag"""
+        with self.runner.isolated_filesystem():
+            # First initialize the project
+            with patch('claude_code_context.cli._check_qdrant_connection', return_value=True):
+                init_result = self.runner.invoke(init)
+                assert init_result.exit_code == 0
+            
+            # Now test index dry-run
+            result = self.runner.invoke(index, ['--dry-run'])
+            
+            assert result.exit_code == 0
+            assert "Dry run mode" in result.output
+            assert "Mode: INCREMENTAL" in result.output
+            assert "Configuration looks good" in result.output
+    
+    def test_index_with_initialized_project(self):
+        """Test index command with initialized project"""
+        with self.runner.isolated_filesystem():
+            # First initialize the project
+            with patch('claude_code_context.cli._check_qdrant_connection', return_value=True):
+                init_result = self.runner.invoke(init)
+                assert init_result.exit_code == 0
+            
+            # Mock the async indexing operation
+            async def mock_run_indexing(*args):
+                pass
+            
+            # Now test actual indexing
+            with patch('claude_code_context.cli.asyncio.run', side_effect=mock_run_indexing):
+                result = self.runner.invoke(index)
+                
+                assert result.exit_code == 0
+                assert "Starting project indexing" in result.output
+                assert "Indexing completed successfully" in result.output
 
 
 class TestCleanCommand:
@@ -351,21 +387,63 @@ class TestCleanCommand:
         self.runner = CliRunner()
     
     def test_clean_with_confirmation(self):
-        """Test clean command with confirmation"""
+        """Test clean command without project initialization"""
         # Simulate user confirming with 'y'
         result = self.runner.invoke(clean, input='y\n')
         
         assert result.exit_code == 0
-        assert "Project cleanup not yet implemented" in result.output
-        assert "FEAT11" in result.output
+        assert "Project not initialized" in result.output
+        assert "Nothing to clean" in result.output
     
     def test_clean_with_rejection(self):
         """Test clean command with user rejection"""
-        # Simulate user rejecting with 'n'
-        result = self.runner.invoke(clean, input='n\n')
-        
-        assert result.exit_code == 1  # Click exits with 1 when confirmation denied
-        assert "Aborted" in result.output
+        with self.runner.isolated_filesystem():
+            # First initialize the project
+            with patch('claude_code_context.cli._check_qdrant_connection', return_value=True):
+                init_result = self.runner.invoke(init)
+                assert init_result.exit_code == 0
+            
+            # Simulate user rejecting with 'n'
+            result = self.runner.invoke(clean, input='n\n')
+            
+            assert result.exit_code == 1  # Click exits with 1 when confirmation denied
+            assert "Aborted" in result.output
+    
+    def test_clean_dry_run(self):
+        """Test clean command with --dry-run flag"""
+        with self.runner.isolated_filesystem():
+            # First initialize the project
+            with patch('claude_code_context.cli._check_qdrant_connection', return_value=True):
+                init_result = self.runner.invoke(init)
+                assert init_result.exit_code == 0
+            
+            # Now test clean dry-run
+            result = self.runner.invoke(clean, ['--dry-run'])
+            
+            assert result.exit_code == 0
+            assert "Dry run mode" in result.output
+            assert "Collection to delete:" in result.output
+            assert "would remove all indexed data" in result.output
+    
+    def test_clean_with_initialized_project(self):
+        """Test clean command with initialized project and confirmation"""
+        with self.runner.isolated_filesystem():
+            # First initialize the project
+            with patch('claude_code_context.cli._check_qdrant_connection', return_value=True):
+                init_result = self.runner.invoke(init)
+                assert init_result.exit_code == 0
+            
+            # Mock the async cleanup operation
+            async def mock_run_cleanup(*args):
+                pass
+            
+            # Now test actual cleanup with confirmation
+            with patch('claude_code_context.cli.asyncio.run', side_effect=mock_run_cleanup):
+                result = self.runner.invoke(clean, input='y\n')
+                
+                assert result.exit_code == 0
+                assert "Starting project cleanup" in result.output
+                assert "Cleanup completed successfully" in result.output
 
 
 class TestMainCommand:
